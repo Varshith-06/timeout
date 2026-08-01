@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nba-play-recommender"
+version = "0.1.0"
+description = "Pause-and-analyze NBA play recommender. Phase 1: reasoning layer on perfect tracking."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "polars",
+    "pyarrow",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+# Phase 2+ (value model, perception) — not needed for the Phase 1 reasoning layer.
+value = ["lightgbm", "torch", "scikit-learn"]
+perception = ["ultralytics", "supervision", "opencv-python", "transformers"]
+dev = ["pytest"]
+
+[project.scripts]
+nba-phase1-demo = "scripts.demo_phase1:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,0 +1,21 @@
+# Data & models are large / license-encumbered — never commit (roadmap §1)
+data/raw/
+data/processed/
+data/video/
+models/
+*.7z
+*.parquet
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Renders / scratch
+out/
+*.png
+!docs/**/*.png
