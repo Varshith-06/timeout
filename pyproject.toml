@@ -26,6 +26,9 @@ dependencies = [
 # keypoints, jersey OCR, pose. The perception spine runs without these on the
 # synthetic broadcast; plug them in for real video.
 perception-models = ["ultralytics", "supervision", "transformers", "paddleocr"]
+# Phase 5.4 live rationale via Claude. The offline template generator (the
+# default) needs nothing extra; install this only for --use-claude.
+llm = ["anthropic"]
 dev = ["pytest"]
 
 [project.scripts]

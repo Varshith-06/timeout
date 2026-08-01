@@ -1,0 +1,6 @@
+{
+  "team_name": "the offense",
+  "emphasis": "attacking the rim and the corner three",
+  "avoid_zones": ["mid_range_left", "mid_range_center", "mid_range_right"],
+  "min_epv_to_recommend": 0.0
+}

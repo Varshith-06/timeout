@@ -5,11 +5,12 @@ set of actions the offense could take, scored in expected points, drawn on
 screen. See [`nba-play-recommender-roadmap.md`](nba-play-recommender-roadmap.md)
 for the full six-month plan.
 
-## Status: Phases 1–3 complete
+## Status: Phases 1–5 complete (end-to-end)
 
 - **Phase 1** — the reasoning layer on perfect tracking (state schema, candidate actions, renderer).
 - **Phase 2** — the value model: calibrated sub-models + a permutation-invariant V(s), scoring every candidate action in expected points. Trains on the GPU when available.
 - **Phase 3** — perception: turn a broadcast into the *same* state schema (homography, tracking, team/identity, clock), with confidence gating and a domain-gap measurement that feeds back into Phase 2's augmentation.
+- **Phases 4–5** — integration, the LLM rationale layer (strict no-coordinates / numbers-echoed schema), and the pause-to-overlay app with caching, a sub-2s latency budget, and "why not X?".
 
 ## Phase 1 — reasoning layer on perfect tracking
 
@@ -146,24 +147,55 @@ python scripts/demo_phase3.py --seed 5     # broadcast -> state -> EPV -> overla
 The measured gap is fed straight back into Phase 2's noise augmentation
 (`augment_feedback.py`), closing the §5.2 loop.
 
+## Phases 4–5 — integration, rationale, and the app
+
+| Roadmap | Module | What it does |
+|---|---|---|
+| §5.1 | `src/state/validate.py` | Conformance validator — SportVU and CV states pass the *same* checks (only `confidence` differs) |
+| §5.4 | `src/llm/schema.py` | Strict `Rationale` schema + constraint validator: no coordinates, player-ids never leaked, every number echoed from the value model |
+| §5.4 | `src/llm/context.py` | Resolves player-ids to names, enumerates the numbers the model may state, folds in coaching priors + matched plays |
+| §5.4 | `src/llm/client.py` | `ClaudeRationaleGenerator` (`claude-opus-4-8`, strict JSON) + a deterministic offline `TemplateRationaleGenerator` |
+| §5.4 | `src/llm/rationale.py` | Generate → validate → regenerate, with a constraint-valid template fallback |
+| §5.5 | `src/app/analyzer.py` | Pause-to-overlay: score + gate, cache by (game, timestamp), sub-2s budget, "why not X?", rationale as a second click |
+
+### Demo
+
+```bash
+python scripts/demo_phase4.py --seed 5                 # conformance + app + rationale (offline)
+python scripts/demo_phase4.py --seed 5 --use-claude    # live Claude rationale (needs API creds)
+```
+
+The rationale is a *second click* (§5.4): the overlay renders instantly from the
+value model; the LLM is called only on demand. The offline generator is the
+default so the whole layer runs and tests without a network or API key — and by
+construction it can't fabricate a number or leak a coordinate.
+
 ## Layout
 
 ```
 src/
   ingest/     SportVU parsing, synthetic generator, possession segmentation
-  state/      court geometry + the state schema
+  state/      court geometry + the state schema + conformance validator
   value/      candidate actions + the Phase 2 value model
   perception/ Phase 3: camera, homography, tracking, teams, identity, clock, state-from-CV
   render/     court renderer + video overlay
-  llm/ app/   scaffolded, empty until Phases 4–5
-tests/        unit + end-to-end tests (42 tests)
-scripts/      demo_phase1.py, train_phase2.py, demo_phase2.py, demo_phase3.py
+  llm/        Phase 5.4: strict rationale schema, context, Claude + offline generators
+  app/        Phase 5.5: pause-to-overlay analyzer with caching + latency budget
+tests/        unit + end-to-end tests (54 tests)
+scripts/      demo_phase1.py, train_phase2.py, demo_phase2.py, demo_phase3.py, demo_phase4.py
+configs/      coaching_priors.json
 ```
 
-## Next: Phase 4–5 — integration, LLM rationale, and the app
+## The full pipeline
 
-Wire perception into the live path, add the LLM prose rationale (`src/llm/`, under
-a strict no-coordinates schema), and the pause-to-overlay app (`src/app/`) with a
-sub-2-second latency budget. The conformance test already holds: SportVU and
-CV-derived possessions run through the same schema validator and the same value
-model.
+```
+broadcast video ─(Phase 3)─▶ State ◀─(Phase 1)─ SportVU tracking
+                              │  (same schema — validated in Phase 4)
+                              ▼
+                   (Phase 2) candidate actions scored in expected points
+                              ▼
+              (Phase 5) overlay + confidence gate + LLM rationale, in the app
+```
+
+Everything runs today on synthetic data with no downloads; drop in real SportVU
+logs and broadcast footage and the same code path runs unchanged.
