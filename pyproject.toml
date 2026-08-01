@@ -12,11 +12,15 @@ dependencies = [
     "polars",
     "pyarrow",
     "matplotlib",
+    # Phase 2 value model. For GPU training install a CUDA build of torch, e.g.
+    #   pip install torch --index-url https://download.pytorch.org/whl/cu126
+    "lightgbm",
+    "torch",
+    "scikit-learn",
 ]
 
 [project.optional-dependencies]
-# Phase 2+ (value model, perception) — not needed for the Phase 1 reasoning layer.
-value = ["lightgbm", "torch", "scikit-learn"]
+# Phase 3 (perception) — not needed for the Phases 1-2 reasoning + value layers.
 perception = ["ultralytics", "supervision", "opencv-python", "transformers"]
 dev = ["pytest"]
 

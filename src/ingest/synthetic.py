@@ -62,6 +62,9 @@ def _shade_toward(spots, rim, feet=3.0):
     to_rim = rim - spots
     dist = np.linalg.norm(to_rim, axis=1, keepdims=True)
     unit = np.divide(to_rim, dist, out=np.zeros_like(to_rim), where=dist > 1e-6)
+    feet = np.asarray(feet, dtype=float)
+    if feet.ndim == 1:  # per-defender cushion -> column vector for broadcasting
+        feet = feet[:, None]
     return spots + unit * feet
 
 
