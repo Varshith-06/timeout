@@ -17,11 +17,15 @@ dependencies = [
     "lightgbm",
     "torch",
     "scikit-learn",
+    # Phase 3 perception spine: homography (cv2) + team clustering (sklearn).
+    "opencv-python-headless",
 ]
 
 [project.optional-dependencies]
-# Phase 3 (perception) — not needed for the Phases 1-2 reasoning + value layers.
-perception = ["ultralytics", "supervision", "opencv-python", "transformers"]
+# Phase 3 learned front-end (needs annotated frames): real detection, court
+# keypoints, jersey OCR, pose. The perception spine runs without these on the
+# synthetic broadcast; plug them in for real video.
+perception-models = ["ultralytics", "supervision", "transformers", "paddleocr"]
 dev = ["pytest"]
 
 [project.scripts]
