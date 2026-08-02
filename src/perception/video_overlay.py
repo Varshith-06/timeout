@@ -77,9 +77,17 @@ def render_video_overlay(broadcast_frame, state, scored_actions, H_pixel_to_cour
     ax.set_facecolor("#20301f")
     ax.set_xticks([]); ax.set_yticks([])
 
+    # On real footage, draw the actual paused frame underneath; the synthetic
+    # broadcast has no pixels, so fall back to the dark reconstructed canvas.
+    on_real = getattr(bf, "image", None) is not None
+    if on_real:
+        ax.imshow(bf.image, extent=(0, cam.img_w, cam.img_h, 0), zorder=0)
+
+    line_alpha = 0.9 if on_real else 0.7
+    line_color = "#ffe14d" if on_real else LINE_COLOR   # yellow reads on footage
     for poly in court_polylines():
         px = _project(H_c2p, poly)
-        ax.plot(px[:, 0], px[:, 1], color=LINE_COLOR, lw=1.2, alpha=0.7)
+        ax.plot(px[:, 0], px[:, 1], color=line_color, lw=1.4, alpha=line_alpha, zorder=1)
 
     for d in bf.detections.by_class("player"):
         x1, y1, x2, y2 = d.bbox

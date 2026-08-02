@@ -10,7 +10,7 @@ models/
 # Model weights (downloaded, not source)
 *.pt
 yolo*.pt
-calibration*.json
+calib*.json
 
 # Python
 __pycache__/

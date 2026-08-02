@@ -72,7 +72,7 @@ def build_realvideo_clip(video, detector, calibration: Calibration,
         clip.frames.append(BroadcastFrame(
             frame_idx=idx, camera=cam, detections=detector.detect(rgb, idx),
             kp_pixels=kp.copy(), kp_court=court_pts.copy(), kp_conf=np.ones(len(names)),
-            clock_read=None, cut=cut,
+            clock_read=None, cut=cut, image=rgb,
         ))
         idx += 1
     return clip

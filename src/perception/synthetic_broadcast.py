@@ -41,6 +41,7 @@ class BroadcastFrame:
     kp_conf: np.ndarray          # (M,) confidences
     clock_read: float | None     # noisy shot-clock OCR reading
     cut: bool                    # True if a camera cut occurred at this frame
+    image: np.ndarray | None = None   # real broadcast RGB frame (real video only)
 
 
 @dataclass
