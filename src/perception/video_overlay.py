@@ -90,10 +90,12 @@ def render_video_overlay(broadcast_frame, state, scored_actions, H_pixel_to_cour
         ax.plot(px[:, 0], px[:, 1], color=line_color, lw=1.4, alpha=line_alpha, zorder=1)
 
     for d in bf.detections.by_class("player"):
-        # On real footage, only box people who project onto the court (skip crowd/bench).
+        # On real footage, only box interior on-court people (skip crowd/bench,
+        # which project onto or just past the sidelines — same gate as the roster).
         if on_real:
             fx, fy = _project(H_pixel_to_court, [d.foot])[0]
-            if not court.on_court(float(fx), float(fy)):
+            if not (court.on_court(float(fx), float(fy))
+                    and 1.5 <= float(fy) <= court.COURT_WIDTH - 1.5):
                 continue
         x1, y1, x2, y2 = d.bbox
         ax.add_patch(Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False,

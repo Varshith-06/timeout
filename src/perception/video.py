@@ -12,15 +12,41 @@ without them; install with `pip install ultralytics`.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from src.perception.detection import Detection, FrameDetections, Detector
 
-# COCO class ids we care about.
-_COCO_PERSON, _COCO_SPORTS_BALL = 0, 32
+# Map a detector's own class *names* onto our schema, so a COCO model and a
+# fine-tuned basketball model both work with no code change. Matched by
+# substring against lowercased model.names, most-specific first.
+_NAME_TO_CLASS = [
+    ("referee", "referee"), ("ref", "referee"),
+    ("rim", "rim"), ("hoop", "rim"), ("basket", "rim"), ("net", "rim"),
+    ("basketball", "ball"), ("ball", "ball"), ("sports ball", "ball"),
+    ("player", "player"), ("person", "player"),
+]
 _EMBED_BINS = 6  # torso colour histogram bins per channel (team clustering)
+
+
+def _class_map(names: dict) -> dict:
+    """{class_id -> our-class} from a model's names dict; unmatched ids dropped.
+
+    Whole-word matching so "baseball bat" is not a ball and "refrigerator" is not
+    a referee; multi-word needles match as a substring.
+    """
+    out = {}
+    for cid, name in names.items():
+        low = str(name).lower()
+        words = set(re.split(r"[^a-z]+", low))
+        for needle, ours in _NAME_TO_CLASS:
+            hit = (needle in low) if " " in needle else (needle in words)
+            if hit:
+                out[int(cid)] = ours
+                break
+    return out
 
 
 class VideoSource:
@@ -71,25 +97,42 @@ def torso_embedding(rgb: np.ndarray, bbox) -> np.ndarray:
     return hist / (hist.sum() + 1e-6)
 
 
+# A fine-tuned basketball model, if present, is preferred over generic COCO.
+_BASKETBALL_WEIGHTS = "models/basketball.pt"
+
+
+def _default_weights() -> str:
+    from pathlib import Path
+    return _BASKETBALL_WEIGHTS if Path(_BASKETBALL_WEIGHTS).exists() else "yolo11l.pt"
+
+
 @dataclass
 class PretrainedYOLODetector(Detector):
-    """COCO-pretrained YOLO adapter: person -> player, sports ball -> ball.
+    """YOLO adapter that maps the model's class *names* onto our schema.
+
+    Works both with generic COCO (person -> player, sports ball -> ball) and with
+    a fine-tuned basketball model (player/ball/hoop) dropped in at
+    ``models/basketball.pt`` — no code change, classes are matched by name. A
+    basketball model, being players-only, also skips the crowd/bench that COCO's
+    ``person`` class boxes.
 
     Defaults to CPU inference: the installed torchvision (+cpu) mismatches a
     CUDA torch build, which breaks the NMS op on GPU. A few frames per pause on
     CPU is fine; install a matching torchvision+cuXXX to run YOLO on the GPU.
     """
 
-    weights: str = "yolo11l.pt"
-    conf: float = 0.2          # player (person) confidence
+    weights: str = field(default_factory=_default_weights)
+    conf: float = 0.2          # player confidence
     ball_conf: float = 0.05    # the basketball is small/blurred — accept it far lower
     device: str = "cpu"
     _model: object = None
+    _clsmap: dict = None
 
     def _load(self):
         if self._model is None:
             from ultralytics import YOLO  # lazy: heavy dep
             self._model = YOLO(self.weights)
+            self._clsmap = _class_map(self._model.names)
         return self._model
 
     def detect(self, image: np.ndarray, frame_idx: int) -> FrameDetections:
@@ -98,16 +141,21 @@ class PretrainedYOLODetector(Detector):
         model = self._load()
         bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         # Predict at the lower (ball) threshold, then gate each class separately:
-        # persons at the strict `conf`, the ball at `ball_conf`. COCO rarely
-        # false-positives a "sports ball" on a wood court, so a low ball threshold
-        # recovers the handler-defining ball without adding player noise.
+        # players at the strict `conf`, the ball at `ball_conf`. A low ball
+        # threshold recovers the small/blurred, handler-defining ball; detectors
+        # rarely false-positive a ball on a wood court.
         floor = min(self.conf, self.ball_conf)
         res = model.predict(bgr, conf=floor, device=self.device, verbose=False)[0]
         dets = []
         for box in res.boxes:
-            cls = int(box.cls[0]); xyxy = tuple(float(v) for v in box.xyxy[0]); c = float(box.conf[0])
-            if cls == _COCO_PERSON and c >= self.conf:
+            ours = self._clsmap.get(int(box.cls[0]))
+            if ours is None:
+                continue
+            xyxy = tuple(float(v) for v in box.xyxy[0]); c = float(box.conf[0])
+            if ours == "player" and c >= self.conf:
                 dets.append(Detection("player", xyxy, c, embedding=torso_embedding(image, xyxy)))
-            elif cls == _COCO_SPORTS_BALL and c >= self.ball_conf:
+            elif ours == "ball" and c >= self.ball_conf:
                 dets.append(Detection("ball", xyxy, c))
+            elif ours in ("referee", "rim") and c >= self.conf:
+                dets.append(Detection(ours, xyxy, c))
         return FrameDetections(frame_idx, dets)

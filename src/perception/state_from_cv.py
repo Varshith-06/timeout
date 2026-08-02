@@ -32,6 +32,74 @@ from src.perception.tracking import run_tracker
 W_PLAYERS, W_HOMOG, W_IDENTITY, W_BALL = 0.35, 0.35, 0.15, 0.15
 CONFIDENCE_GATE = 0.6      # below this, withhold the recommendation (4.9)
 MIN_PLAYERS_SHOW = 8       # below this, refuse regardless (4.9)
+SIDELINE_INSET = 1.5       # ft: crowd/bench project onto the sidelines; players don't
+MIN_ROSTER_PRESENCE = 0.25 # a real track is present in >= this fraction of frames
+
+
+def _smooth_possessor(poss: list, window: int = 2) -> list:
+    """Mode-filter the per-frame ball possessor over +/- window frames.
+
+    The handler shouldn't flicker frame to frame; a single bad interpolated ball
+    point is outvoted by its neighbours.
+    """
+    from collections import Counter
+    out = []
+    for i in range(len(poss)):
+        votes = Counter(p for p in poss[max(0, i - window):i + window + 1] if p is not None)
+        out.append(votes.most_common(1)[0][0] if votes else None)
+    return out
+
+
+def _interpolate_track(seen: list) -> list:
+    """Fill None gaps in a per-frame (x, y) pixel track by linear interpolation.
+
+    Interior gaps are interpolated between the surrounding detections; leading and
+    trailing gaps hold the nearest detection. Returns all-None unchanged if the
+    ball was never seen.
+    """
+    idx = [i for i, p in enumerate(seen) if p is not None]
+    if not idx:
+        return list(seen)
+    out = list(seen)
+    first, last = idx[0], idx[-1]
+    for i in range(len(seen)):
+        if out[i] is not None:
+            continue
+        if i < first:
+            out[i] = seen[first]
+        elif i > last:
+            out[i] = seen[last]
+        else:
+            lo = max(j for j in idx if j < i)
+            hi = min(j for j in idx if j > i)
+            f = (i - lo) / (hi - lo)
+            out[i] = (seen[lo][0] + f * (seen[hi][0] - seen[lo][0]),
+                      seen[lo][1] + f * (seen[hi][1] - seen[lo][1]))
+    return out
+
+
+def _select_roster(frames_court: list) -> set:
+    """Track ids whose *median* court position is an interior on-floor player.
+
+    Gates on the court interior (sidelines inset by :data:`SIDELINE_INSET`) using
+    the per-track median over the window — robust to per-frame homography jitter.
+    Requires a minimum presence so one-off false detections are excluded.
+    """
+    n = max(1, len(frames_court))
+    pos: dict = {}
+    for fc in frames_court:
+        for tid, xy in fc.items():
+            pos.setdefault(tid, []).append(xy)
+    roster = set()
+    for tid, xys in pos.items():
+        if len(xys) / n < MIN_ROSTER_PRESENCE:
+            continue
+        arr = np.asarray(xys)
+        mx, my = float(np.median(arr[:, 0])), float(np.median(arr[:, 1]))
+        if (on_court(mx, my, 3.0)
+                and SIDELINE_INSET <= my <= court.COURT_WIDTH - SIDELINE_INSET):
+            roster.add(tid)
+    return roster
 
 
 @dataclass
@@ -48,6 +116,7 @@ class Recovery:
     identities: dict
     stride: int
     diagnostics: dict = field(default_factory=dict)
+    roster_tids: set = field(default_factory=set)   # tracks kept as real players
 
 
 def recover_tracking(clip, roster_rows, stride: int = 5) -> Recovery:
@@ -65,7 +134,8 @@ def recover_tracking(clip, roster_rows, stride: int = 5) -> Recovery:
                 per_frame_track_det[fidx][t.track_id] = det
 
     temporal = TemporalHomography(window=5)
-    frames_court, homographies, ball_court, homog_ok, ball_possessor = [], [], [], [], []
+    frames_court, homographies, ball_court, homog_ok = [], [], [], []
+    ball_px_seen: list = []
     dt = stride / 25.0
 
     for i, bf in enumerate(clip.frames):
@@ -77,16 +147,7 @@ def recover_tracking(clip, roster_rows, stride: int = 5) -> Recovery:
 
         tdets = per_frame_track_det[i]
         balls = bf.detections.by_class("ball")
-
-        # Ball possessor by PIXEL proximity (avoids the off-plane projection error
-        # that corrupts court-space ball distance). Nearest player box to the ball.
-        possessor = None
-        if balls and tdets:
-            bx, by = balls[0].center
-            possessor = min(
-                tdets, key=lambda t: (tdets[t].center[0] - bx) ** 2 + (tdets[t].center[1] - by) ** 2
-            )
-        ball_possessor.append(possessor)
+        ball_px_seen.append(tuple(balls[0].center) if balls else None)
 
         court = {}
         if H is not None:
@@ -108,6 +169,32 @@ def recover_tracking(clip, roster_rows, stride: int = 5) -> Recovery:
             ball_court.append(None)
         frames_court.append(court)
 
+    # Roster gate: which tracks are real on-floor players vs crowd/bench/refs.
+    # A detector that boxes every person (COCO) plus far-field homography error
+    # dumps spectators right at the sidelines; a player's *median* court position
+    # over the window sits in the interior. Tracklet length and motion do NOT
+    # separate them (seated crowd tracks as stably as a player), but the sideline
+    # inset does. A basketball-specific detector makes this a no-op.
+    roster_tids = _select_roster(frames_court)
+    frames_court = [{t: xy for t, xy in fc.items() if t in roster_tids} for fc in frames_court]
+
+    # Temporal ball track: the detector sees the small, fast ball only
+    # intermittently. Interpolate its PIXEL path across the gaps so every frame
+    # has a ball position, then read possession (nearest roster player) on every
+    # frame — so the analyzed pause has a handler even if its own frame missed
+    # the ball. Pixel space, not court: the ball is off the court plane in flight.
+    ball_px = _interpolate_track(ball_px_seen)
+    ball_possessor = []
+    for i in range(len(clip.frames)):
+        tdets = {t: d for t, d in per_frame_track_det[i].items() if t in roster_tids}
+        bp = ball_px[i]
+        possessor = None
+        if bp is not None and tdets:
+            possessor = min(tdets, key=lambda t: (tdets[t].center[0] - bp[0]) ** 2
+                            + (tdets[t].center[1] - bp[1]) ** 2)
+        ball_possessor.append(possessor)
+    ball_possessor = _smooth_possessor(ball_possessor, window=2)
+
     # Velocities via finite difference of court positions across frames.
     velocities = [dict() for _ in clip.frames]
     for i in range(1, len(frames_court)):
@@ -123,7 +210,8 @@ def recover_tracking(clip, roster_rows, stride: int = 5) -> Recovery:
         "n_tracklets": len(tracklets),
     }
     return Recovery(frames_court, velocities, homographies, ball_court, ball_possessor,
-                    homog_ok, tracklets, team_labels, identities, stride, diagnostics)
+                    homog_ok, tracklets, team_labels, identities, stride, diagnostics,
+                    roster_tids=roster_tids)
 
 
 def _fallback_pid(tid: int) -> int:
