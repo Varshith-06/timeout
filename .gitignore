@@ -2,6 +2,8 @@
 data/raw/
 data/processed/
 data/video/
+data/cache/
+*.npz
 models/
 *.7z
 *.parquet

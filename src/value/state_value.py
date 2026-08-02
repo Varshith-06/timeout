@@ -47,14 +47,18 @@ class StateValueNet(nn.Module):
 
 
 # --- Array construction ------------------------------------------------------
-def build_vs_arrays(possessions, vocab: PlayerVocab):
-    """Flatten possession trajectories into padded per-state arrays for V(s)."""
+def build_vs_arrays(possessions, vocab: PlayerVocab | None = None):
+    """Flatten possession trajectories into padded per-state arrays for V(s).
+
+    With ``vocab`` the player index column is encoded to embedding indices; with
+    ``vocab=None`` it stores the raw player_ids (used by the chunked disk cache,
+    which encodes later against a global vocab)."""
     E, P, M, G, Y, W = [], [], [], [], [], []
     for poss in possessions:
         for state, step in zip(poss.states, poss.step_index):
             ents, pidx, mask, glob = entity_tensor(state)
             E.append(ents)
-            P.append(vocab.encode(pidx))
+            P.append(vocab.encode(pidx) if vocab is not None else pidx)
             M.append(mask)
             G.append(glob)
             Y.append(poss.realized_points)
@@ -142,6 +146,8 @@ def train_value_model(
     device: str | None = "auto",
     weight_decay: float = 0.0,
     early_stop: bool = False,
+    arrays: dict | None = None,
+    val_arrays: dict | None = None,
 ) -> tuple[ValueModel, dict]:
     """Train V(s) with MSE to realized points on the GPU when available.
 
@@ -155,7 +161,7 @@ def train_value_model(
     rng = np.random.default_rng(seed)
     cfg = AugmentConfig()
 
-    arr = build_vs_arrays(possessions, vocab)
+    arr = arrays if arrays is not None else build_vs_arrays(possessions, vocab)
     n = len(arr["y"])
     y = torch.tensor(arr["y"]).to(dev)
     w = torch.tensor(arr["w"]).to(dev)
@@ -167,7 +173,8 @@ def train_value_model(
     best_val, best_state = float("inf"), None
 
     history = {"train_mse": [], "val_mse": [], "device": str(dev)}
-    val_arr = build_vs_arrays(val_possessions, vocab) if val_possessions else None
+    val_arr = val_arrays if val_arrays is not None else (
+        build_vs_arrays(val_possessions, vocab) if val_possessions else None)
     if val_arr is not None:
         v_ents = torch.tensor(val_arr["ents"]).to(dev)
         v_pidx = torch.tensor(val_arr["pidx"]).to(dev)

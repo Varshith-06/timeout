@@ -31,9 +31,6 @@ perception-models = ["ultralytics", "supervision", "transformers", "paddleocr"]
 llm = ["anthropic"]
 dev = ["pytest"]
 
-[project.scripts]
-nba-phase1-demo = "scripts.demo_phase1:main"
-
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]

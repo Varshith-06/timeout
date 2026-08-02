@@ -37,7 +37,9 @@ def load_shots(csv_path: str | Path, game_ids: list[str] | None = None) -> pl.Da
     Columns kept: game_id, player_id, team_id, quarter, game_clock (seconds
     remaining), made (0/1), points (2/3), is_three, shot_distance.
     """
-    df = pl.read_csv(csv_path, infer_schema_length=2000)
+    # infer_schema_length=None scans the whole file so a late float in an
+    # otherwise-int column (or an early all-null run) can't mistype the schema.
+    df = pl.read_csv(csv_path, infer_schema_length=None)
     df = df.with_columns(pl.col("GAME_ID").cast(pl.Utf8).str.zfill(10))
     if game_ids:
         df = df.filter(pl.col("GAME_ID").is_in([str(g) for g in game_ids]))
@@ -60,7 +62,7 @@ def load_shots(csv_path: str | Path, game_ids: list[str] | None = None) -> pl.Da
 
 def load_pbp(csv_path: str | Path) -> pl.DataFrame:
     """Load a game's play-by-play with a parsed game_clock and points-scored."""
-    df = pl.read_csv(csv_path, infer_schema_length=2000)
+    df = pl.read_csv(csv_path, infer_schema_length=None)
     clock = [ _clock_to_seconds(s) for s in df["PCTIMESTRING"].to_list() ]
     df = df.with_columns(pl.Series("game_clock", clock))
     # Points for a scoring event: made FG (3 if the description says 3PT else 2),

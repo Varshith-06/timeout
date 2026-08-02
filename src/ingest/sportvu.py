@@ -35,6 +35,16 @@ import polars as pl
 BALL_TEAM_ID = -1
 BALL_PLAYER_ID = -1
 
+# Explicit moment schema: some games start with the shot clock off (all-null),
+# so letting polars infer the column type from the first rows can mistype
+# shot_clock as Null and then fail on the first real value.
+_MOMENT_SCHEMA = {
+    "game_id": pl.Utf8, "event_id": pl.Utf8, "quarter": pl.Int64,
+    "game_clock": pl.Float64, "shot_clock": pl.Float64, "unix_ms": pl.Int64,
+    "team_id": pl.Int64, "player_id": pl.Int64, "x": pl.Float64,
+    "y": pl.Float64, "z": pl.Float64, "is_ball": pl.Boolean,
+}
+
 
 @dataclass
 class Game:
@@ -140,16 +150,9 @@ def extract_moments(game: dict) -> pl.DataFrame:
                 )
 
     if not records:
-        return pl.DataFrame(
-            schema={
-                "game_id": pl.Utf8, "event_id": pl.Utf8, "quarter": pl.Int64,
-                "game_clock": pl.Float64, "shot_clock": pl.Float64, "unix_ms": pl.Int64,
-                "team_id": pl.Int64, "player_id": pl.Int64, "x": pl.Float64,
-                "y": pl.Float64, "z": pl.Float64, "is_ball": pl.Boolean,
-            }
-        )
+        return pl.DataFrame(schema=_MOMENT_SCHEMA)
 
-    df = pl.DataFrame(records)
+    df = pl.DataFrame(records, schema=_MOMENT_SCHEMA)
     # De-duplicate overlapping events: a moment is uniquely a (quarter,
     # game_clock, player_id). Keep the first occurrence (2.2).
     df = df.unique(subset=["quarter", "game_clock", "player_id"], keep="first")

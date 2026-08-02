@@ -155,11 +155,12 @@ def build_real_shot_dataset(json_dir, shots_csv, max_games: int | None = None,
         if max_games:
             paths = paths[:max_games]
 
+    shots_all = load_shots(shots_csv)  # read the 19 MB file once, filter per game
     X, y, points, players_col = [], [], [], []
     all_players = set()
     for p in paths:
         game = parse_game(p)
-        sx, sy, sp, spl = _extract_shots(game, load_shots(shots_csv, [game.game_id]))
+        sx, sy, sp, spl = _extract_shots(game, shots_all.filter(pl.col("game_id") == game.game_id))
         X += sx; y += sy; points += sp; players_col += spl
         all_players.update(spl)
 
@@ -191,7 +192,7 @@ def _extract_shots(game, shots):
 
 
 def build_real_dataset(json_dir, shots_csv, pbp_dir, max_games=None, paths=None,
-                       subsample=12) -> LabeledDataset:
+                       subsample=15, max_possessions=None) -> LabeledDataset:
     """Full real-data LabeledDataset: shots, passes, drives, and possession values.
 
     Possession realized points come from the play-by-play join (roadmap 2.4);
@@ -199,6 +200,10 @@ def build_real_dataset(json_dir, shots_csv, pbp_dir, max_games=None, paths=None,
     possessions supplying negatives (3.2b); drives are handler rim-attacks labeled
     by whether they reached a rim look (3.2c). V(s) trains on the subsampled
     possession states -> realized points, with the opening seconds down-weighted.
+
+    Every shot/pass/drive across all games is kept (they are compact feature
+    vectors), but ``max_possessions`` caps the number of possession samples held
+    as State objects for V(s) — those are the memory hog on many games.
     """
     from pathlib import Path
     if paths is None:
@@ -206,6 +211,8 @@ def build_real_dataset(json_dir, shots_csv, pbp_dir, max_games=None, paths=None,
         if max_games:
             paths = paths[:max_games]
 
+    import gc
+    shots_all = load_shots(shots_csv)  # read once, filter per game
     shot_X, shot_y, shot_pts, shot_pl = [], [], [], []
     pass_X, pass_y, drive_X, drive_y = [], [], [], []
     possessions, all_players = [], set()
@@ -218,7 +225,7 @@ def build_real_dataset(json_dir, shots_csv, pbp_dir, max_games=None, paths=None,
         pbp = load_pbp(pbp_path)
         lookup = possession_lookup(pbp_possessions(pbp))
 
-        sx, sy, sp, spl = _extract_shots(game, load_shots(shots_csv, [game.game_id]))
+        sx, sy, sp, spl = _extract_shots(game, shots_all.filter(pl.col("game_id") == game.game_id))
         shot_X += sx; shot_y += sy; shot_pts += sp; shot_pl += spl; all_players.update(spl)
 
         for poss in iter_possessions(game):
@@ -237,16 +244,18 @@ def build_real_dataset(json_dir, shots_csv, pbp_dir, max_games=None, paths=None,
                 pbp, poss.frames[0].quarter, real["end_clock"], real["start_clock"],
                 poss.offense_team_id)
 
-            # V(s): subsampled states -> realized points, opening seconds down-weighted.
-            states, steps = [], []
-            for i in range(0, len(poss.frames), subsample):
-                fr = poss.frames[i]
-                st = build_state(fr, roster_jersey=None, last_touch_time=None)
-                states.append(st)
-                steps.append(int(max(0.0, real["start_clock"] - fr.game_clock) // 2))
-            if states:
-                possessions.append(PossessionSample(states, steps, float(pts)))
-                all_players.update(p.player_id for p in states[0].players)
+            # V(s): subsampled states -> realized points, opening seconds
+            # down-weighted. Cap the number held as State objects (memory).
+            if max_possessions is None or len(possessions) < max_possessions:
+                states, steps = [], []
+                for i in range(0, len(poss.frames), subsample):
+                    fr = poss.frames[i]
+                    st = build_state(fr, roster_jersey=None, last_touch_time=None)
+                    states.append(st)
+                    steps.append(int(max(0.0, real["start_clock"] - fr.game_clock) // 2))
+                if states:
+                    possessions.append(PossessionSample(states, steps, float(pts)))
+                    all_players.update(p.player_id for p in states[0].players)
 
             # Passes: completed transitions (label 1); last one is the turnover (label 0).
             passes = _extract_passes(poss)
@@ -266,6 +275,10 @@ def build_real_dataset(json_dir, shots_csv, pbp_dir, max_games=None, paths=None,
                 if driver is None:
                     continue
                 drive_X.append(F.drive_features(st, driver, direction)); drive_y.append(success)
+
+        # Release this game's tracking (a ~780k-row frame) before the next one.
+        del game, pbp
+        gc.collect()
 
     def arr(rows, ncol):
         return np.array(rows) if rows else np.zeros((0, ncol))
