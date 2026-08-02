@@ -165,6 +165,17 @@ def crossed_halfcourt(x: float) -> bool:
     return x <= HALFCOURT_X
 
 
+def on_court(x: float, y: float, margin: float = 5.0) -> bool:
+    """True if (x, y) feet lies within the court plus a margin.
+
+    Real-video detectors (COCO YOLO) box every person — crowd, bench, refs — not
+    just the ten on-court players. Those off-court people project well outside the
+    lines; gating on the court polygon (with a homography-error margin) keeps only
+    the players who are actually on the floor.
+    """
+    return -margin <= x <= COURT_LENGTH + margin and -margin <= y <= COURT_WIDTH + margin
+
+
 @dataclass(frozen=True)
 class CourtDims:
     """Convenience bundle for the renderer."""

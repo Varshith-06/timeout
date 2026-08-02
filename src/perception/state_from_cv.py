@@ -20,6 +20,7 @@ import numpy as np
 
 from src.ingest.possessions import Frame, PlayerFrame
 from src.state import court
+from src.state.court import on_court
 from src.state.schema import State, build_state
 from src.perception.homography import (TemporalHomography, project_feet_to_court,
                                        solve_homography)
@@ -94,7 +95,10 @@ def recover_tracking(clip, roster_rows, stride: int = 5) -> Recovery:
                 boxes = np.array([tdets[t].bbox for t in tids])
                 pts = project_feet_to_court(H, boxes)
                 for tid, xy in zip(tids, pts):
-                    court[tid] = (float(xy[0]), float(xy[1]))
+                    # Drop off-court detections (crowd/bench/refs project outside
+                    # the lines) so only real on-floor players enter the state.
+                    if on_court(float(xy[0]), float(xy[1])):
+                        court[tid] = (float(xy[0]), float(xy[1]))
             if balls:
                 bp = project_feet_to_court(H, np.array([balls[0].bbox]))[0]
                 ball_court.append((float(bp[0]), float(bp[1])))
@@ -181,7 +185,15 @@ def build_state_from_cv(recovery: Recovery, frame_idx: int, offense_team_id=None
                 ball = recovery.ball_court[j]
                 break
     if ball is None:
-        ball = (47.0, 25.0)
+        # Ball never detected (COCO YOLO misses the small fast ball). It is far
+        # likelier to be among the players than at center court, so fall back to
+        # the detected-players centroid rather than (47, 25).
+        if court_pos:
+            cx = float(np.mean([p[0] for p in court_pos.values()]))
+            cy = float(np.mean([p[1] for p in court_pos.values()]))
+            ball = (cx, cy)
+        else:
+            ball = (47.0, 25.0)
 
     # Assemble players; team_id from identity cluster mapping.
     players_meta = []
