@@ -29,8 +29,8 @@ perception-models = ["ultralytics", "supervision", "transformers", "paddleocr"]
 # Phase 5.4 live rationale via Claude. The offline template generator (the
 # default) needs nothing extra; install this only for --use-claude.
 llm = ["anthropic"]
-# Real broadcast video: clip fetcher (nba_api) + pretrained detection (YOLO).
-realvideo = ["nba_api", "ultralytics"]
+# Real broadcast video: clip fetchers (nba_api / yt-dlp) + pretrained detection (YOLO).
+realvideo = ["nba_api", "yt-dlp", "ultralytics"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]
