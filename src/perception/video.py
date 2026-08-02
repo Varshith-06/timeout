@@ -81,7 +81,8 @@ class PretrainedYOLODetector(Detector):
     """
 
     weights: str = "yolo11l.pt"
-    conf: float = 0.2
+    conf: float = 0.2          # player (person) confidence
+    ball_conf: float = 0.05    # the basketball is small/blurred — accept it far lower
     device: str = "cpu"
     _model: object = None
 
@@ -96,12 +97,17 @@ class PretrainedYOLODetector(Detector):
         import cv2
         model = self._load()
         bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-        res = model.predict(bgr, conf=self.conf, device=self.device, verbose=False)[0]
+        # Predict at the lower (ball) threshold, then gate each class separately:
+        # persons at the strict `conf`, the ball at `ball_conf`. COCO rarely
+        # false-positives a "sports ball" on a wood court, so a low ball threshold
+        # recovers the handler-defining ball without adding player noise.
+        floor = min(self.conf, self.ball_conf)
+        res = model.predict(bgr, conf=floor, device=self.device, verbose=False)[0]
         dets = []
         for box in res.boxes:
             cls = int(box.cls[0]); xyxy = tuple(float(v) for v in box.xyxy[0]); c = float(box.conf[0])
-            if cls == _COCO_PERSON:
+            if cls == _COCO_PERSON and c >= self.conf:
                 dets.append(Detection("player", xyxy, c, embedding=torso_embedding(image, xyxy)))
-            elif cls == _COCO_SPORTS_BALL:
+            elif cls == _COCO_SPORTS_BALL and c >= self.ball_conf:
                 dets.append(Detection("ball", xyxy, c))
         return FrameDetections(frame_idx, dets)

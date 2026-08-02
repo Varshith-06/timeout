@@ -167,8 +167,10 @@ YOLO detector (person→player, ball) and a **manual court calibration** in plac
 the (untrained) court-keypoint model.
 
 ```bash
-pip install -e ".[realvideo]"                              # nba_api + ultralytics
-python fetch_nba_clips.py                                  # labeled event clips (see note)
+pip install -e ".[realvideo]"                              # nba_api + yt-dlp + ultralytics
+# get footage: labeled NBA-API clips (US networks) OR any YouTube possession (anywhere)
+python fetch_nba_clips.py                                   # labeled event clips (see note)
+python scripts/fetch_youtube.py "https://youtu.be/..." --start 1:05 --end 1:20
 python scripts/calibrate.py --video clip.mp4 --time 2.0 --out calib.json
 python scripts/demo_realvideo.py --video clip.mp4 --calib calib.json --pause 6.0
 ```
@@ -180,18 +182,27 @@ verify the fit. Optical flow then propagates the homography across the shot. Thi
 is the reliable substitute for a trained keypoint model.
 
 Then `demo_realvideo.py` runs the exact perception spine + value model validated
-elsewhere: detect → track → calibrated homography → `State` → EPV → overlay on the
-frame. On a clean half-court frame with ~10 players it draws the recommendation;
-on replays/close-ups/occluded frames it (correctly) withholds via the confidence
-gate.
+elsewhere: detect → track → calibrated homography → `State` → EPV → overlay drawn
+**on the actual paused frame**. Two robustness steps keep the pretrained front-end
+honest on messy broadcast pixels: detections are **gated to the court polygon**
+(via the homography) so crowd/bench/refs don't enter the state, and the **ball is
+detected at a low confidence** (COCO rarely false-positives a ball on a wood
+court) so the ball-handler is identified from possession rather than guessed. On a
+clean half-court frame with ~10 players it draws the recommendation; on
+replays/close-ups/occluded frames it (correctly) withholds via the confidence gate.
 
-> **Two real caveats.** (1) The NBA API serves region-locked *"VIDEO NOT
-> AVAILABLE"* placeholders to many connections — fetch from a US home network;
-> `demo_realvideo.py` detects a placeholder and says so. (2) COCO YOLO is coarse
-> for basketball (small fast ball, dense players) and the value model was trained
-> on clean tracking, so real-video recommendations are rougher than on tracking
-> data. A fine-tuned basketball detector drops in behind the same `Detector`
-> interface.
+> **The honest boundary.** The reasoning core is validated (86% on simulated,
+> beats baselines on ~97 real games); the remaining gap is purely the *pretrained*
+> front-end on real pixels. (1) Region lock: the NBA API serves *"VIDEO NOT
+> AVAILABLE"* placeholders to many connections (`demo_realvideo.py` detects and
+> says so) — use `fetch_youtube.py` from anywhere instead. (2) COCO YOLO is coarse
+> for basketball: it detects every *person* (the court gate handles most crowd, but
+> bench/refs near the sideline can still slip through when the far-field homography
+> is loose) and only intermittently the fast, blurred ball. The court gate and
+> low-confidence ball recovery narrow this, but a **fine-tuned basketball detector
+> (players-only + ball) is the production front-end** — it drops in behind the same
+> `Detector` interface (`PretrainedYOLODetector(weights="basketball.pt")`) with no
+> other change, and closes the gap.
 
 ---
 
