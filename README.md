@@ -160,6 +160,39 @@ python scripts/train_real.py             # full value stack on real data + real 
 For GPU training, install a CUDA build of torch, e.g.
 `pip install torch --index-url https://download.pytorch.org/whl/cu126`.
 
+### Running on real broadcast video
+
+The real-video path uses **pretrained** models (no annotation/training): a COCO
+YOLO detector (person→player, ball) and a **manual court calibration** in place of
+the (untrained) court-keypoint model.
+
+```bash
+pip install -e ".[realvideo]"                              # nba_api + ultralytics
+python fetch_nba_clips.py                                  # labeled event clips (see note)
+python scripts/calibrate.py --video clip.mp4 --time 2.0 --out calib.json
+python scripts/demo_realvideo.py --video clip.mp4 --calib calib.json --pause 6.0
+```
+
+**Calibration** is a one-time, ~45-second click step per camera shot: a court
+diagram highlights a landmark, you click the matching spot in the frame (6–8
+well-spread line intersections), and it shows the projected court lines so you can
+verify the fit. Optical flow then propagates the homography across the shot. This
+is the reliable substitute for a trained keypoint model.
+
+Then `demo_realvideo.py` runs the exact perception spine + value model validated
+elsewhere: detect → track → calibrated homography → `State` → EPV → overlay on the
+frame. On a clean half-court frame with ~10 players it draws the recommendation;
+on replays/close-ups/occluded frames it (correctly) withholds via the confidence
+gate.
+
+> **Two real caveats.** (1) The NBA API serves region-locked *"VIDEO NOT
+> AVAILABLE"* placeholders to many connections — fetch from a US home network;
+> `demo_realvideo.py` detects a placeholder and says so. (2) COCO YOLO is coarse
+> for basketball (small fast ball, dense players) and the value model was trained
+> on clean tracking, so real-video recommendations are rougher than on tracking
+> data. A fine-tuned basketball detector drops in behind the same `Detector`
+> interface.
+
 ---
 
 ## Layout
@@ -169,12 +202,14 @@ src/
   ingest/     SportVU parsing, synthetic generator, possession segmentation, real-data labels
   state/      court geometry, the state schema, conformance validator
   value/      candidate actions, sub-models, V(s), scoring, simulator, real-data builder
-  perception/ camera, homography, tracking, teams, identity, clock, state-from-CV, overlay
+  perception/ camera, homography, tracking, teams, identity, clock, state-from-CV,
+              overlay, + real video: calibrate, video (YOLO), realvideo adapter
   render/     top-down court renderer + video overlay
   llm/        strict rationale schema, context, Claude + offline generators
   app/        pause-to-overlay analyzer with caching + latency budget
-tests/        unit + end-to-end tests (58)
-scripts/      demo_phase{1..4}.py, train_phase2.py, fetch_real_data.py, build_real_cache.py, train_real.py
+tests/        unit + end-to-end tests (62)
+scripts/      demo_phase{1..4}.py, demo_realvideo.py, calibrate.py,
+              train_phase2.py, fetch_real_data.py, build_real_cache.py, train_real.py
 configs/      coaching_priors.json
 data/ models/ out/   gitignored — real games, cache, weights, artifacts
 ```

@@ -7,6 +7,10 @@ data/cache/
 models/
 *.7z
 *.parquet
+# Model weights (downloaded, not source)
+*.pt
+yolo*.pt
+calibration*.json
 
 # Python
 __pycache__/
