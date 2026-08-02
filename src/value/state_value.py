@@ -140,6 +140,8 @@ def train_value_model(
     val_possessions=None,
     verbose: bool = False,
     device: str | None = "auto",
+    weight_decay: float = 0.0,
+    early_stop: bool = False,
 ) -> tuple[ValueModel, dict]:
     """Train V(s) with MSE to realized points on the GPU when available.
 
@@ -160,8 +162,9 @@ def train_value_model(
     glob = torch.tensor(arr["globals"]).to(dev)
 
     net = StateValueNet(vocab_size=len(vocab)).to(dev)
-    opt = torch.optim.Adam(net.parameters(), lr=lr)
+    opt = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
     loss_fn = nn.MSELoss(reduction="none")
+    best_val, best_state = float("inf"), None
 
     history = {"train_mse": [], "val_mse": [], "device": str(dev)}
     val_arr = build_vs_arrays(val_possessions, vocab) if val_possessions else None
@@ -204,6 +207,9 @@ def train_value_model(
                 vpred = net(v_ents, v_pidx, v_mask, v_glob)
                 vmse = float(((vpred - v_y) ** 2).mean())
             history["val_mse"].append(vmse)
+            if early_stop and vmse < best_val:
+                best_val = vmse
+                best_state = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
         if verbose and (epoch % 5 == 0 or epoch == epochs - 1):
             msg = f"epoch {epoch:3d}  train_mse={history['train_mse'][-1]:.4f}"
             if val_arr is not None:
@@ -211,4 +217,7 @@ def train_value_model(
             print(msg)
 
     net.to("cpu")  # portable, low-latency single-state inference for scoring
+    if early_stop and best_state is not None:
+        net.load_state_dict(best_state)  # restore the best-val checkpoint
+        history["best_val_mse"] = best_val
     return ValueModel(net, vocab), history

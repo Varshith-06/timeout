@@ -108,22 +108,36 @@ the learned models never see them. **GATE: PASS.**
 
 ### Training on real data
 
-The simulator is a stand-in; the shot model can be trained on the real
+The simulator is a stand-in; the whole value stack can be trained on the real
 2015-16 SportVU logs. `scripts/fetch_real_data.py` downloads games + shot/PBP
-labels, and `scripts/train_real.py` joins real shots to the tracking and trains
-the make-probability model (roadmap 3.2a), split by *game* so nothing leaks:
+labels; `scripts/train_real.py` joins them to the tracking and trains the shot /
+pass / drive sub-models **and** V(s), split by *game* so nothing leaks:
 
 ```bash
 python scripts/fetch_real_data.py 15    # ~110 MB: 15 games + shots + play-by-play
-python scripts/train_real.py            # train + report real calibration
+python scripts/train_real.py            # full value stack on real data + real metrics
 ```
 
-Result on 15 games (1,658 train / 504 held-out shots): **Brier 0.214 vs 0.251
-base, AUC 0.740**, well-calibrated at mid-range and three, underconfident at the
-rim where the sample is thin (the roadmap's 60-100k-shot target tightens this).
-`src/ingest/real_data.py` + `src/value/real_dataset.py` build the same
-`LabeledDataset` the trainers already consume, so the synthetic→real swap needs
-no change downstream. Real data is gitignored; run the fetch script to get it.
+`src/ingest/real_data.py` parses the shot and play-by-play labels (a real
+possession parser: made FG / defensive rebound / turnover boundaries), and
+`src/value/real_dataset.py` builds the same `LabeledDataset` the trainers already
+consume — so the synthetic→real swap needs no change downstream. The parsed
+possessions come out at NBA-real rates (≈190/game, ≈1.0 points per possession).
+
+Results on 15 games, evaluated on held-out games:
+
+| Model | Real Brier | Base | vs base |
+|---|---|---|---|
+| Shot make (AUC 0.74) | 0.214 | 0.251 | **beats** |
+| Drive success | 0.031 | 0.070 | **beats** |
+| Pass completion | 0.058 | 0.055 | ties (the roadmap's "hardest" sub-model) |
+| V(s) MSE | 1.32 | 1.30 | ties |
+
+The shot and drive models beat their base rates; pass completion (~93% complete)
+and V(s) tie theirs — V learns per-state value only weakly from single-sample
+returns on 12 training games (the roadmap trains a full season with TD(λ)
+smoothing; more games close the gap). Real data is gitignored — run the fetch
+script to get it.
 
 ## Phase 3 — perception
 

@@ -133,5 +133,61 @@ def moment_positions(game, quarter: int, game_clock: float, tol: float = 0.15,
     return _snap(game, quarter, best_gc)
 
 
+def pbp_possessions(pbp: pl.DataFrame) -> list[dict]:
+    """Parse play-by-play into possessions (roadmap 2.4).
+
+    Returns dicts with quarter, start_clock, end_clock (start > end, clock counts
+    down), offense_team_id, and points. Possession boundaries: a made field goal
+    or turnover flips the ball; a missed shot only flips on a *defensive* rebound
+    (an offensive rebound continues the same possession). Free throws add to the
+    current possession. This is what gives V(s) a real target and a trustworthy
+    offense assignment, independent of the tracking segmentation.
+    """
+    out: list[dict] = []
+    for q in sorted(pbp["quarter"].unique().to_list()):
+        ev = pbp.filter(pl.col("quarter") == q).sort("game_clock", descending=True)
+        cur_team, start, pts = None, 720.0, 0.0
+
+        def close(clock):
+            nonlocal cur_team, start, pts
+            if cur_team is not None and start > clock:
+                out.append({"quarter": q, "start_clock": start, "end_clock": clock,
+                            "offense_team_id": cur_team, "points": pts})
+            start, pts, cur_team = clock, 0.0, None
+
+        for r in ev.iter_rows(named=True):
+            t, clk, p = r["event_type"], r["game_clock"], r["points"]
+            team = None if r["team_id"] is None else int(r["team_id"])
+            if clk is None:
+                continue
+            if t in (MADE_SHOT, MISSED_SHOT, TURNOVER):
+                if cur_team is None:
+                    cur_team = team
+                elif team is not None and team != cur_team:
+                    close(clk); cur_team = team  # ball already changed hands
+                pts += p
+                if t in (MADE_SHOT, TURNOVER):
+                    close(clk)
+            elif t == FREE_THROW:
+                if cur_team is None:
+                    cur_team = team
+                pts += p
+            elif t == REBOUND:
+                if team is not None and cur_team is not None and team != cur_team:
+                    close(clk); cur_team = team  # defensive rebound flips possession
+        close(0.0)
+    return out
+
+
+def possession_lookup(possessions: list[dict]):
+    """Return f(quarter, game_clock) -> possession dict (or None)."""
+    def f(quarter, clock):
+        for p in possessions:
+            if p["quarter"] == quarter and p["end_clock"] <= clock <= p["start_clock"]:
+                return p
+        return None
+    return f
+
+
 def parsed_game_paths(json_dir: str | Path) -> list[Path]:
     return sorted(Path(json_dir).glob("*.json"))

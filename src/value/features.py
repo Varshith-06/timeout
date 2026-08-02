@@ -200,11 +200,16 @@ def entity_tensor(state: State):
     for p in state.players:
         if i >= MAX_ENTITIES - 1:  # leave a slot for the ball
             break
+        # Real tracking occasionally drops a player's coordinates; treat a
+        # non-finite position as an unobserved entity (mask 0) rather than
+        # letting NaN propagate into V(s).
+        if not (math.isfinite(p.x) and math.isfinite(p.y)):
+            continue
         ents[i] = [
             (p.x - rim[0]) / court.HALFCOURT_X,
             (p.y - rim[1]) / (court.COURT_WIDTH / 2),
-            p.vx / 10.0,
-            p.vy / 10.0,
+            _finite(p.vx) / 10.0,
+            _finite(p.vy) / 10.0,
             1.0 if p.side == "offense" else 0.0,
             1.0 if p.side == "defense" else 0.0,
             0.0,
@@ -214,27 +219,33 @@ def entity_tensor(state: State):
         mask[i] = 1.0
         i += 1
 
-    # Ball as its own entity.
+    # Ball as its own entity (if its position is finite).
     b = state.ball
-    ents[i] = [
-        (b["x"] - rim[0]) / court.HALFCOURT_X,
-        (b["y"] - rim[1]) / (court.COURT_WIDTH / 2),
-        b["vx"] / 10.0,
-        b["vy"] / 10.0,
-        0.0, 0.0, 1.0, 0.0,
-    ]
-    mask[i] = 1.0
+    if math.isfinite(b["x"]) and math.isfinite(b["y"]):
+        ents[i] = [
+            (b["x"] - rim[0]) / court.HALFCOURT_X,
+            (b["y"] - rim[1]) / (court.COURT_WIDTH / 2),
+            _finite(b["vx"]) / 10.0,
+            _finite(b["vy"]) / 10.0,
+            0.0, 0.0, 1.0, 0.0,
+        ]
+        mask[i] = 1.0
 
     shot_clock = state.timestamp.get("shot_clock")
     globals_ = np.array(
         [
             (shot_clock if shot_clock is not None else 12.0) / 24.0,
-            state.context.spacing_area_sqft / 500.0,
+            _finite(state.context.spacing_area_sqft) / 500.0,
             state.context.n_players_observed / 10.0,
         ],
         dtype=np.float32,
     )
-    return ents, pidx, mask, globals_
+    # Belt and suspenders: never emit a non-finite value to the network.
+    return np.nan_to_num(ents), pidx, mask, np.nan_to_num(globals_)
+
+
+def _finite(v, default=0.0):
+    return float(v) if v is not None and math.isfinite(v) else default
 
 
 class PlayerVocab:

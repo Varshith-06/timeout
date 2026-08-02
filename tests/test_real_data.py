@@ -47,3 +47,30 @@ def test_load_pbp_points(tmp_path):
     pts = df["points"].to_list()
     assert pts == [3, 2, 0, 1, 0, 0]            # 3PT made, layup, miss, made FT, missed FT, turnover
     assert df["game_clock"].to_list()[0] == 11 * 60 + 41
+
+
+# A = 1610612737 (offense first), B = 1610612765.
+POSS_CSV = """GAME_ID,EVENTMSGTYPE,PERIOD,PCTIMESTRING,HOMEDESCRIPTION,VISITORDESCRIPTION,PLAYER1_ID,PLAYER1_TEAM_ID
+0021500490,1,1,11:40,A 3PT Jump Shot,,1,1610612737
+0021500490,2,1,11:30,,B Missed Layup,2,1610612765
+0021500490,4,1,11:28,A Rebound,,3,1610612737
+0021500490,1,1,11:20,A Layup,,3,1610612737
+0021500490,5,1,11:10,,B Turnover,4,1610612765
+"""
+
+
+def test_pbp_possessions_parser(tmp_path):
+    from src.ingest.real_data import load_pbp, pbp_possessions, possession_lookup
+    p = tmp_path / "pbp.csv"
+    p.write_text(POSS_CSV, encoding="utf-8")
+    poss = pbp_possessions(load_pbp(p))
+    # Four possessions: A scores 3, B misses (A defensive rebound ends it, 0),
+    # A scores 2, B turns it over (0).
+    teams = [x["offense_team_id"] for x in poss]
+    pts = [x["points"] for x in poss]
+    assert teams == [1610612737, 1610612765, 1610612737, 1610612765]
+    assert pts == [3, 0, 2, 0]
+    # Lookup by (quarter, clock) lands in the right possession.
+    lk = possession_lookup(poss)
+    hit = lk(1, 11 * 60 + 35)                    # during B's missed-shot possession
+    assert hit is not None and hit["offense_team_id"] == 1610612765
