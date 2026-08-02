@@ -106,6 +106,25 @@ python scripts/demo_phase2.py --seed 5                           # EPV-scored ov
 Calibration is validatable because the simulator knows the true probabilities;
 the learned models never see them. **GATE: PASS.**
 
+### Training on real data
+
+The simulator is a stand-in; the shot model can be trained on the real
+2015-16 SportVU logs. `scripts/fetch_real_data.py` downloads games + shot/PBP
+labels, and `scripts/train_real.py` joins real shots to the tracking and trains
+the make-probability model (roadmap 3.2a), split by *game* so nothing leaks:
+
+```bash
+python scripts/fetch_real_data.py 15    # ~110 MB: 15 games + shots + play-by-play
+python scripts/train_real.py            # train + report real calibration
+```
+
+Result on 15 games (1,658 train / 504 held-out shots): **Brier 0.214 vs 0.251
+base, AUC 0.740**, well-calibrated at mid-range and three, underconfident at the
+rim where the sample is thin (the roadmap's 60-100k-shot target tightens this).
+`src/ingest/real_data.py` + `src/value/real_dataset.py` build the same
+`LabeledDataset` the trainers already consume, so the synthetic→real swap needs
+no change downstream. Real data is gitignored; run the fetch script to get it.
+
 ## Phase 3 — perception
 
 Turn a broadcast into the *same* state schema, so Phases 1–2 run on it unchanged.
@@ -174,16 +193,17 @@ construction it can't fabricate a number or leak a coordinate.
 
 ```
 src/
-  ingest/     SportVU parsing, synthetic generator, possession segmentation
+  ingest/     SportVU parsing, synthetic generator, possession segmentation, real-data labels
   state/      court geometry + the state schema + conformance validator
-  value/      candidate actions + the Phase 2 value model
+  value/      candidate actions + the Phase 2 value model + real-data shot dataset
   perception/ Phase 3: camera, homography, tracking, teams, identity, clock, state-from-CV
   render/     court renderer + video overlay
   llm/        Phase 5.4: strict rationale schema, context, Claude + offline generators
   app/        Phase 5.5: pause-to-overlay analyzer with caching + latency budget
-tests/        unit + end-to-end tests (54 tests)
-scripts/      demo_phase1.py, train_phase2.py, demo_phase2.py, demo_phase3.py, demo_phase4.py
+tests/        unit + end-to-end tests (57 tests)
+scripts/      demo_phase{1..4}.py, train_phase2.py, fetch_real_data.py, train_real.py
 configs/      coaching_priors.json
+data/ models/ out/   (gitignored — real games, weights, and artifacts)
 ```
 
 ## The full pipeline

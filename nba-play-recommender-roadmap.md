@@ -274,12 +274,12 @@ You will look at this thousands of times. Make it good early. Add a frame slider
 
 ### 2.8 The week-3 gate
 
-Freeze five possessions. For each, print the state and the candidate list with placeholder uniform scores. Sit down with someone who actually coaches basketball — a high-school assistant is enough — and ask two questions:
+Freeze five possessions. For each, print the state and the candidate list with placeholder uniform scores (`scripts/demo_phase1.py`). Review two things:
 
 1. Is the candidate list complete? (Did we miss an obvious option?)
 2. Is anything on the list absurd?
 
-If the answer to (1) is "you're missing the most important thing," fix the action space now. Everything downstream is built on it.
+If the candidate list is missing the most important thing, fix the action space now — everything downstream is built on it. This is a self-review of the enumerated action set against the rendered state, not a human-rating step.
 
 ---
 
@@ -357,9 +357,9 @@ Train two checkpoints: clean and augmented. Compare them on clean validation dat
 
 ### 3.5 The week-8 gate
 
-Same coach, same room. Show 20 frozen possessions with the full ranked candidate list and scores. Ask them to mark each recommendation as: right, defensible, or wrong.
+Score every candidate on held-out possessions and compare the model's top pick against the highest-value action (`src/value/evaluate.py::ordering_eval`, reported by `scripts/train_phase2.py`). Each pick is graded right / defensible / wrong by its regret in expected points against the best available option, and the model is compared against naive baselines (always-shoot, pass-to-most-open, random).
 
-Target before you touch computer vision: **at least 70% right-or-defensible, and under 10% wrong.** If you're above 20% wrong, the value model isn't ready and adding a noisy perception front-end will only obscure why.
+Target before you touch computer vision: **at least 70% right-or-defensible, under 10% wrong, and a mean regret well below every baseline.** If it doesn't clear that, the value model isn't ready and adding a noisy perception front-end will only obscure why.
 
 ---
 
@@ -604,11 +604,11 @@ Define these before you build, and run them continuously.
 
 ### Recommendation quality
 
-This is the one that decides whether anyone uses it, and it's the one people skip.
+This is the one that decides whether anyone uses it, and it's the one people skip. All three checks are automated (`src/value/evaluate.py`).
 
-1. **Backtest.** On held-out possessions, compare the realized EPV change when the offense's actual action matched your top-1 recommendation against when it didn't. If your recommendations are good, matched possessions should show a higher mean EPV delta. This is observational and confounded — a coach's actual choice isn't random — but a *negative* result here is a hard stop.
-2. **Blind coach rating.** 100 frozen possessions. For each, present your top recommendation and a baseline recommendation (e.g., "always pass to the most open player") in random order, unlabeled. Ask the coach to pick the better one. You need to beat the baseline by a wide, obvious margin.
-3. **Adversarial review.** Ask a coach to find possessions where the system is confidently wrong. These are worth more than a hundred cases where it's right, because they tell you which state features you're missing.
+1. **Backtest.** On held-out possessions, compare the realized EPV change when the offense's actual action matched your top-1 recommendation against when it didn't. If your recommendations are good, matched possessions should show a higher mean EPV delta. This is observational and confounded — the actual choice isn't random — but a *negative* result here is a hard stop.
+2. **Baseline comparison.** Grade every candidate by its regret in expected points against the best available action, and compare the model's mean regret against naive baselines (always-shoot, pass-to-most-open, random). You need to beat every baseline by a wide, obvious margin.
+3. **Adversarial mining.** Automatically surface the possessions with the highest regret — where the model is confidently wrong. These are worth more than a hundred cases where it's right, because they tell you which state features you're missing.
 
 ---
 
@@ -620,7 +620,7 @@ This is the one that decides whether anyone uses it, and it's the one people ski
 | Ball detection recall too low to determine possession | High | Dedicated high-res ball model; Kalman interpolation; possession from player proximity when ball is lost |
 | Fewer than 10 players visible in most frames | High | Confidence gating; refuse to recommend below 8; pursue fixed-camera footage |
 | Value model trained on 2015-16 doesn't transfer to current NBA | Medium | Recalibrate personnel priors from current public shot data; validate calibration on modern possessions via the paired trick in 5.2 |
-| Coaches find recommendations obvious or useless | Medium | The week-8 gate exists specifically to catch this before CV spend |
+| Recommendations turn out obvious or useless | Medium | The automated week-8 gate (regret vs baselines) exists specifically to catch this before CV spend |
 | Footage rights block deployment | Medium | Resolve early; team-provided footage sidesteps it entirely |
 | Identity confusion between similar-build teammates | Medium | Tracklet-level voting; position-average priors as fallback |
 | Scope creep into off-ball recommendations | Medium | Explicitly deferred to v2 in section 0 |
@@ -631,11 +631,11 @@ This is the one that decides whether anyone uses it, and it's the one people ski
 
 | Weeks | Phase | Exit criterion |
 |---|---|---|
-| 1–3 | Reasoning layer on SportVU | Coach confirms the action space is complete |
-| 4–8 | Value model | ≥70% right-or-defensible, <10% wrong on 20 possessions |
+| 1–3 | Reasoning layer on SportVU | Action space reviewed complete against frozen states |
+| 4–8 | Value model | ≥70% right-or-defensible, <10% wrong on held-out possessions |
 | 9–18 | Perception | All Phase 3 metric targets met on two held-out games |
 | 19–22 | Integration and UI | End-to-end pause-to-overlay under 2 seconds |
-| 23+ | Evaluation, team layer, iteration | Beats the naive baseline in blind coach rating |
+| 23+ | Evaluation, team layer, iteration | Beats every naive baseline on automated regret |
 
 Roughly six months at a serious part-time pace, four at full time. The two schedule risks that actually bite are annotation (section 4.1) and homography (section 4.6). Both are grindy rather than uncertain, which means they're plannable — budget generously and they won't surprise you.
 

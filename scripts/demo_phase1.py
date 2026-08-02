@@ -7,7 +7,7 @@ Runs the full reasoning layer on synthetic tracking (no downloads required):
 
 For each frozen possession it prints the state summary and the candidate list
 with *placeholder uniform scores* (real scores arrive in Phase 2), and writes a
-PNG overlay. This is exactly the artifact you sit down with a coach and ask:
+PNG overlay. This is exactly the artifact you review to ask:
 "Is the candidate list complete? Is anything on it absurd?"
 
 Usage:
@@ -122,7 +122,7 @@ def main(argv=None) -> int:
         print(f"  -> {png}")
 
     print("\nWeek-3 gate artifacts written to", out.resolve())
-    print("Ask a coach: (1) is the candidate list complete?  (2) is anything absurd?")
+    print("Review: (1) is the candidate list complete?  (2) is anything absurd?")
     return 0
 
 
