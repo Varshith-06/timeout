@@ -128,7 +128,7 @@ Pause-to-overlay in **~50 ms** (budget: 2 s); re-watching the same moment is a
 0 ms cache hit. The rationale is a second click — the overlay renders instantly
 from the value model; the LLM is called only on demand.
 
-**58 tests pass** end to end (`python -m pytest -q`).
+**70 tests pass** end to end (`python -m pytest -q`).
 
 ---
 
@@ -136,7 +136,7 @@ from the value model; the LLM is called only on demand.
 
 ```bash
 pip install -e .        # core: numpy, polars, pyarrow, matplotlib, torch, lightgbm, scikit-learn, opencv
-python -m pytest -q     # 58 tests, no data or GPU required
+python -m pytest -q     # 70 tests, no data or GPU required
 ```
 
 Everything below runs on synthetic data with no downloads:
@@ -183,26 +183,44 @@ is the reliable substitute for a trained keypoint model.
 
 Then `demo_realvideo.py` runs the exact perception spine + value model validated
 elsewhere: detect → track → calibrated homography → `State` → EPV → overlay drawn
-**on the actual paused frame**. Two robustness steps keep the pretrained front-end
-honest on messy broadcast pixels: detections are **gated to the court polygon**
-(via the homography) so crowd/bench/refs don't enter the state, and the **ball is
-detected at a low confidence** (COCO rarely false-positives a ball on a wood
-court) so the ball-handler is identified from possession rather than guessed. On a
-clean half-court frame with ~10 players it draws the recommendation; on
-replays/close-ups/occluded frames it (correctly) withholds via the confidence gate.
+**on the actual paused frame**. Four robustness steps keep a *pretrained* detector
+honest on messy broadcast pixels (on the Heat/Nets test clip they take the frame
+from 15 "players"/handler-on-the-scoreboard to a clean 10-player state with the
+handler on the ball-carrier, confidence 0.70 → 0.85):
+
+- **Roster gate** — a track is kept only if its *median* court position is an
+  interior on-floor player. Crowd/bench/refs project onto the sidelines (loose
+  far-field homography dumps them there); a small sideline inset removes them.
+  Tracklet length and motion don't separate them — seated crowd tracks as stably
+  as a player — but the inset does.
+- **Low-confidence ball detection** (`ball_conf=0.05`) — the small, blurred ball
+  is missed at normal thresholds; detectors rarely false-positive a ball on wood.
+- **Temporal ball tracking** — the ball's pixel path is interpolated across the
+  frames the detector misses, so every pause has a ball and thus a handler.
+- **Handler voting** — possession is mode-filtered over neighbouring frames so the
+  ball-handler can't flicker.
+
+The detector maps its own class *names* onto the schema, so a fine-tuned
+basketball model dropped at `models/basketball.pt` is used automatically with no
+code change (and, being players-only, makes the roster gate a no-op). On a clean
+half-court frame it draws the recommendation; on replays/close-ups/occluded frames
+it (correctly) withholds via the confidence gate.
 
 > **The honest boundary.** The reasoning core is validated (86% on simulated,
 > beats baselines on ~97 real games); the remaining gap is purely the *pretrained*
 > front-end on real pixels. (1) Region lock: the NBA API serves *"VIDEO NOT
 > AVAILABLE"* placeholders to many connections (`demo_realvideo.py` detects and
 > says so) — use `fetch_youtube.py` from anywhere instead. (2) COCO YOLO is coarse
-> for basketball: it detects every *person* (the court gate handles most crowd, but
-> bench/refs near the sideline can still slip through when the far-field homography
-> is loose) and only intermittently the fast, blurred ball. The court gate and
-> low-confidence ball recovery narrow this, but a **fine-tuned basketball detector
-> (players-only + ball) is the production front-end** — it drops in behind the same
-> `Detector` interface (`PretrainedYOLODetector(weights="basketball.pt")`) with no
-> other change, and closes the gap.
+> for basketball: it detects every *person* (the roster gate removes most, but a
+> coach/ref standing in the interior can still slip through) and only intermittently
+> the fast, blurred ball. The robustness stack above narrows this a lot, but a
+> **fine-tuned basketball detector (players-only + ball) is the production
+> front-end** — drop it at `models/basketball.pt` and it's used automatically, no
+> code change, closing the gap. (3) Automatic *from-scratch* court calibration was
+> attempted and set aside: on broadcast wood the court lines are a mix of light
+> (boundary) and dark (arc, key) strokes with jersey/logo interference, so classical
+> line detection can't correspond them reliably — the trained keypoint model is the
+> real path, and the ~45-second manual click calibration is the reliable stand-in.
 
 ---
 
@@ -218,7 +236,7 @@ src/
   render/     top-down court renderer + video overlay
   llm/        strict rationale schema, context, Claude + offline generators
   app/        pause-to-overlay analyzer with caching + latency budget
-tests/        unit + end-to-end tests (62)
+tests/        unit + end-to-end tests (70)
 scripts/      demo_phase{1..4}.py, demo_realvideo.py, calibrate.py,
               train_phase2.py, fetch_real_data.py, build_real_cache.py, train_real.py
 configs/      coaching_priors.json
