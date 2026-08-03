@@ -200,11 +200,26 @@ handler on the ball-carrier, confidence 0.70 → 0.85):
 - **Handler voting** — possession is mode-filtered over neighbouring frames so the
   ball-handler can't flicker.
 
-The detector maps its own class *names* onto the schema, so a fine-tuned
-basketball model dropped at `models/basketball.pt` is used automatically with no
-code change (and, being players-only, makes the roster gate a no-op). On a clean
-half-court frame it draws the recommendation; on replays/close-ups/occluded frames
-it (correctly) withholds via the confidence gate.
+The detector maps its own class *names* onto the schema, so any detector drops in
+with no code change:
+
+- **Local YOLO** (default) — COCO `yolo11l.pt`, or a fine-tuned basketball model
+  placed at `models/basketball.pt` (auto-detected). A players-only model makes the
+  roster gate a no-op.
+- **Hosted Roboflow workflow** — `--detector roboflow` calls a serverless workflow
+  (the class names `ball, basket, person` map to ball/rim/player). The API key is
+  read from `$ROBOFLOW_API_KEY` and never stored. It gives markedly better *ball*
+  detection (→ reliable handler); being a `person` detector it still needs the
+  roster gate. One network call per frame, so use a larger `--stride`:
+
+  ```bash
+  export ROBOFLOW_API_KEY=...   # your key; never committed
+  python scripts/demo_realvideo.py --video clip.mp4 --calib calib.json --pause 39 \
+      --detector roboflow --stride 8
+  ```
+
+On a clean half-court frame it draws the recommendation; on replays/close-ups/
+occluded frames it (correctly) withholds via the confidence gate.
 
 > **The honest boundary.** The reasoning core is validated (86% on simulated,
 > beats baselines on ~97 real games); the remaining gap is purely the *pretrained*

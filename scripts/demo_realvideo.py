@@ -41,19 +41,33 @@ def main(argv=None) -> int:
     ap.add_argument("--stride", type=int, default=5)
     ap.add_argument("--models", default="models/phase2")
     ap.add_argument("--out", default="out/realvideo")
+    ap.add_argument("--detector", choices=["yolo", "roboflow"], default="yolo",
+                    help="yolo = local (COCO or models/basketball.pt); "
+                         "roboflow = hosted workflow (needs $ROBOFLOW_API_KEY)")
+    ap.add_argument("--rf-workspace", default="varshith-ublcu")
+    ap.add_argument("--rf-workflow", default="general-segmentation-api")
+    ap.add_argument("--rf-classes", default="ball, basket, person")
     args = ap.parse_args(argv)
 
     from src.perception.calibrate import Calibration
     from src.perception.realvideo import build_realvideo_clip, looks_like_placeholder
     from src.perception.state_from_cv import (build_state_from_cv, pick_showable_frame,
                                               recover_tracking)
-    from src.perception.video import PretrainedYOLODetector, VideoSource
+    from src.perception.video import (PretrainedYOLODetector, RoboflowWorkflowDetector,
+                                      VideoSource)
 
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     vid = VideoSource(args.video)
     print(f"video: {vid.width}x{vid.height}, {vid.fps:.0f} fps, {vid.frame_count} frames")
 
-    detector = PretrainedYOLODetector()
+    if args.detector == "roboflow":
+        detector = RoboflowWorkflowDetector(workspace=args.rf_workspace,
+                                            workflow_id=args.rf_workflow, classes=args.rf_classes)
+        print(f"detector: Roboflow workflow {args.rf_workspace}/{args.rf_workflow} "
+              f"(one network call per frame — larger --stride is faster)")
+    else:
+        detector = PretrainedYOLODetector()
+        print(f"detector: local YOLO ({detector.weights})")
     if looks_like_placeholder(vid, detector):
         print("This clip is an NBA 'VIDEO NOT AVAILABLE' placeholder, not game footage.\n"
               "Fetch real clips from a US home connection (fetch_nba_clips.py).")

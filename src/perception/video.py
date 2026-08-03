@@ -12,6 +12,7 @@ without them; install with `pip install ultralytics`.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -31,21 +32,27 @@ _NAME_TO_CLASS = [
 _EMBED_BINS = 6  # torso colour histogram bins per channel (team clustering)
 
 
-def _class_map(names: dict) -> dict:
-    """{class_id -> our-class} from a model's names dict; unmatched ids dropped.
+def _match_class(name: str) -> str | None:
+    """Map one detector class *name* onto our schema, or None if unrecognised.
 
     Whole-word matching so "baseball bat" is not a ball and "refrigerator" is not
     a referee; multi-word needles match as a substring.
     """
+    low = str(name).lower()
+    words = set(re.split(r"[^a-z]+", low))
+    for needle, ours in _NAME_TO_CLASS:
+        if (needle in low) if " " in needle else (needle in words):
+            return ours
+    return None
+
+
+def _class_map(names: dict) -> dict:
+    """{class_id -> our-class} from a model's names dict; unmatched ids dropped."""
     out = {}
     for cid, name in names.items():
-        low = str(name).lower()
-        words = set(re.split(r"[^a-z]+", low))
-        for needle, ours in _NAME_TO_CLASS:
-            hit = (needle in low) if " " in needle else (needle in words)
-            if hit:
-                out[int(cid)] = ours
-                break
+        ours = _match_class(name)
+        if ours is not None:
+            out[int(cid)] = ours
     return out
 
 
@@ -158,4 +165,66 @@ class PretrainedYOLODetector(Detector):
                 dets.append(Detection("ball", xyxy, c))
             elif ours in ("referee", "rim") and c >= self.conf:
                 dets.append(Detection(ours, xyxy, c))
+        return FrameDetections(frame_idx, dets)
+
+
+def _roboflow_predictions(resp: dict) -> list:
+    """Pull the detection list out of a Roboflow workflow response, defensively."""
+    for out in resp.get("outputs", []):
+        preds = out.get("predictions")
+        if isinstance(preds, dict) and isinstance(preds.get("predictions"), list):
+            return preds["predictions"]
+        if isinstance(preds, list):
+            return preds
+    return []
+
+
+@dataclass
+class RoboflowWorkflowDetector(Detector):
+    """Hosted detector via a Roboflow serverless *workflow* (no local weights).
+
+    Calls the workflow REST endpoint with ``requests`` (so no `inference-sdk`
+    dependency / Python-version pin), maps each prediction's ``class`` name onto
+    our schema, and returns the same :class:`Detection` objects the rest of the
+    pipeline consumes. The API key is read from ``$ROBOFLOW_API_KEY`` — never
+    hard-coded, so it never lands in the repo. Each frame is one network call, so
+    prefer a larger ``stride`` on the pause window.
+    """
+
+    workspace: str
+    workflow_id: str
+    classes: str = "ball, basket, person"
+    api_url: str = "https://serverless.roboflow.com"
+    api_key: str = field(default_factory=lambda: os.environ.get("ROBOFLOW_API_KEY", ""))
+    conf: float = 0.2
+    ball_conf: float = 0.05
+    timeout: float = 120.0
+
+    def detect(self, image: np.ndarray, frame_idx: int) -> FrameDetections:
+        import base64
+        import cv2
+        import requests
+        if not self.api_key:
+            raise RuntimeError("set $ROBOFLOW_API_KEY to use RoboflowWorkflowDetector")
+        ok, buf = cv2.imencode(".jpg", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        b64 = base64.b64encode(buf).decode()
+        url = f"{self.api_url}/infer/workflows/{self.workspace}/{self.workflow_id}"
+        body = {"api_key": self.api_key, "inputs": {
+            "image": {"type": "base64", "value": b64}, "classes": self.classes}}
+        r = requests.post(url, json=body, timeout=self.timeout)
+        r.raise_for_status()
+        dets = []
+        for p in _roboflow_predictions(r.json()):
+            ours = _match_class(p.get("class", ""))
+            if ours is None:
+                continue
+            c = float(p.get("confidence", 0.0))
+            x, y, w, h = p["x"], p["y"], p["width"], p["height"]
+            bbox = (x - w / 2, y - h / 2, x + w / 2, y + h / 2)
+            if ours == "player" and c >= self.conf:
+                dets.append(Detection("player", bbox, c, embedding=torso_embedding(image, bbox)))
+            elif ours == "ball" and c >= self.ball_conf:
+                dets.append(Detection("ball", bbox, c))
+            elif ours in ("referee", "rim") and c >= self.conf:
+                dets.append(Detection(ours, bbox, c))
         return FrameDetections(frame_idx, dets)

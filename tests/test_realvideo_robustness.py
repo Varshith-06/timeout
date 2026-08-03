@@ -1,6 +1,6 @@
 """Tests for the real-video robustness helpers: class mapping, roster gate,
 ball interpolation, and handler smoothing."""
-from src.perception.video import _class_map
+from src.perception.video import _class_map, _match_class, _roboflow_predictions
 from src.perception.state_from_cv import (_interpolate_track, _select_roster,
                                           _smooth_possessor)
 from src.state.court import COURT_WIDTH
@@ -11,6 +11,23 @@ def test_class_map_coco():
     m = _class_map({0: "person", 32: "sports ball", 34: "baseball bat",
                     35: "baseball glove", 72: "refrigerator"})
     assert m == {0: "player", 32: "ball"}
+
+
+def test_match_class_roboflow_names():
+    # The Roboflow workflow's class names map onto our schema.
+    assert _match_class("person") == "player"
+    assert _match_class("ball") == "ball"
+    assert _match_class("basket") == "rim"
+    assert _match_class("scoreboard") is None
+
+
+def test_roboflow_predictions_extraction():
+    resp = {"outputs": [{"predictions": {"image": {"width": 1280, "height": 720},
+            "predictions": [{"x": 665.0, "y": 343.0, "width": 24.0, "height": 29.0,
+                             "confidence": 0.87, "class": "ball"}]}}]}
+    preds = _roboflow_predictions(resp)
+    assert len(preds) == 1 and preds[0]["class"] == "ball"
+    assert _roboflow_predictions({"outputs": []}) == []
 
 
 def test_class_map_basketball_model():
