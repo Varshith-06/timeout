@@ -1,4 +1,5 @@
-"""Tests for the web-app overlay-spec geometry helpers."""
+"""Tests for the web-app overlay-spec geometry helpers + chat context."""
+from src.app.chat_backend import _system_prompt
 from src.app.webexport import _action_geometry, _label
 from src.value.actions import Action
 from src.value.scoring import ScoredAction
@@ -40,3 +41,18 @@ def test_pass_geometry_missing_target_no_arrow():
     g = _action_geometry(_sc("PASS_TO", "pass", target=99), handler_px=[1.0, 2.0],
                          feet={}, rim_px=[10.0, 20.0])
     assert "arrow" not in g or g["arrow"] is None
+
+
+def test_chat_system_prompt_lists_candidates_and_jerseys():
+    rec = {"confidence": 0.82, "n_players": 10, "_sel": 1,
+           "actions": [
+               {"id": "a1", "label": "DRIVE left (EPV 1.10)", "rationale": {"headline": "attack the closeout"}},
+               {"id": "a2", "label": "PASS (EPV 1.05)", "rationale": {"headline": "swing to the wing"}},
+           ],
+           "players": [{"jersey": 7}, {"jersey": 34}, {"jersey": None}]}
+    sp = _system_prompt(rec)
+    assert "id=a1" in sp and "id=a2" in sp
+    assert "82%" in sp                       # confidence echoed
+    assert "(currently shown)" in sp         # marks the selected action (_sel=1 -> a2)
+    assert "#7" in sp and "#34" in sp        # readable jerseys listed
+    assert "coordinates" in sp.lower()       # the no-coordinates rule is stated

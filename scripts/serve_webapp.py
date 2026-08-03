@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import argparse
 import http.server
+import json
 import os
 import re
 import socketserver
+import sys
 import webbrowser
 from functools import partial
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -51,6 +55,29 @@ class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self._range_remaining = length
         return _LimitedReader(f, length)
+
+    def do_POST(self):
+        if self.path.rstrip("/") != "/chat":
+            self.send_error(404); return
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(n) or b"{}")
+            from src.app.chat_backend import answer
+            out = answer(body.get("message", ""), body.get("rec") or {})
+            data = json.dumps(out).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            # No key / SDK / model error -> 503 so the page uses its offline assistant.
+            msg = json.dumps({"error": f"{type(e).__name__}: {e}"}).encode()
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(msg)))
+            self.end_headers()
+            self.wfile.write(msg)
 
     def copyfile(self, source, outputfile):
         # Honour the range window when streaming the body.
@@ -99,8 +126,10 @@ def main(argv=None) -> int:
     handler = partial(RangeRequestHandler, directory=str(root))
     socketserver.TCPServer.allow_reuse_address = True
     url = f"http://localhost:{args.port}/index.html"
+    chat = ("Claude assistant: ON (claude-opus-4-8)" if os.environ.get("ANTHROPIC_API_KEY")
+            else "Claude assistant: OFF (set ANTHROPIC_API_KEY to enable; the offline assistant still works)")
     with socketserver.TCPServer(("", args.port), handler) as httpd:
-        print(f"serving {root}\n  {url}\nCtrl-C to stop.")
+        print(f"serving {root}\n  {url}\n  {chat}\nCtrl-C to stop.")
         if not args.no_open:
             webbrowser.open(url)
         try:

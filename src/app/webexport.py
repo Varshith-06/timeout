@@ -26,20 +26,23 @@ def _project_court_to_px(H_pixel_to_court, pts):
     return cv2.perspectiveTransform(pts, Hinv).reshape(-1, 2)
 
 
-def _roster_boxes(recovery, frame_idx: int) -> dict:
-    """pid -> pixel bbox for the roster players present at this frame."""
+def _roster_boxes(recovery, frame_idx: int) -> tuple[dict, dict]:
+    """(pid -> pixel bbox, pid -> jersey number) for roster players at this frame."""
     from src.perception.state_from_cv import _fallback_pid
-    out = {}
+    boxes, jerseys = {}, {}
     for t in recovery.tracklets:
         if t.track_id not in recovery.roster_tids:
             continue
+        ident = recovery.identities.get(t.track_id)
+        pid = ident.player_id if (ident and ident.player_id is not None) else _fallback_pid(t.track_id)
+        # Tracklet-voted jersey (stamped on every detection by assign_jerseys).
+        votes = [d.jersey_read for _, d in t.history if d.jersey_read is not None]
+        if votes:
+            jerseys[pid] = max(set(votes), key=votes.count)
         for fidx, det in t.history:
-            if fidx != frame_idx:
-                continue
-            ident = recovery.identities.get(t.track_id)
-            pid = ident.player_id if (ident and ident.player_id is not None) else _fallback_pid(t.track_id)
-            out[pid] = [float(v) for v in det.bbox]
-    return out
+            if fidx == frame_idx:
+                boxes[pid] = [float(v) for v in det.bbox]
+    return boxes, jerseys
 
 
 def _rim_px(state, H_pixel_to_court, handler_px):
@@ -84,12 +87,16 @@ def build_overlay_spec(recovery, clip, frame_idx: int, state, scored_actions,
     ``rationale_top_k`` full rationales are generated (the actions a user is likely
     to ask about); the rest carry a short auto-description so the payload stays small.
     """
-    names = names or {}
     feet, ball_px = frame_player_pixels(recovery, clip, frame_idx)
     handler = state.handler
     handler_px = feet.get(handler.player_id) if handler is not None else None
     rim_px = _rim_px(state, recovery.homographies[frame_idx], handler_px)
-    boxes = _roster_boxes(recovery, frame_idx)
+    boxes, jerseys = _roster_boxes(recovery, frame_idx)
+
+    # OCR'd jersey numbers become the player names the rationale echoes ("#7").
+    names = dict(names or {})
+    for pid, j in jerseys.items():
+        names.setdefault(pid, f"#{j}")
 
     players = []
     for p in state.players:
@@ -97,7 +104,7 @@ def build_overlay_spec(recovery, clip, frame_idx: int, state, scored_actions,
             "id": int(p.player_id),
             "team": "offense" if p.team_id == state.offense_team_id else "defense",
             "is_handler": handler is not None and p.player_id == handler.player_id,
-            "jersey": getattr(p, "jersey", None),
+            "jersey": jerseys.get(p.player_id),
             "foot": feet.get(p.player_id),
             "box": boxes.get(p.player_id),
         })

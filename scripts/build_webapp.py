@@ -41,6 +41,7 @@ def main(argv=None) -> int:
                     help="seconds of context each side of a pause for local tracking/roster")
     ap.add_argument("--cadence", type=float, default=1.0, help="seconds between exported recommendations")
     ap.add_argument("--max-seconds", type=float, default=None, help="absolute end time (s); default = clip end")
+    ap.add_argument("--no-jersey", action="store_true", help="skip jersey-number OCR (faster)")
     ap.add_argument("--detector", choices=["yolo", "roboflow"], default="yolo")
     ap.add_argument("--rf-workspace", default="varshith-ublcu")
     ap.add_argument("--rf-workflow", default="general-segmentation-api")
@@ -93,6 +94,17 @@ def main(argv=None) -> int:
         end = min(end, cut_t)
         print(f"camera cut at ~{cut_t:.1f}s — limiting to the calibrated shot "
               f"({start_sec:.1f}-{cut_t:.1f}s, {len(clip.frames)} frames)")
+
+    # Jersey OCR once over the whole shot: stamps a tracklet-voted number onto the
+    # (shared) detections, so the per-window states below inherit them for free.
+    if not args.no_jersey:
+        try:
+            from src.perception.jersey import assign_jerseys
+            print("Reading jersey numbers (EasyOCR)...")
+            jmap = assign_jerseys(clip.frames)
+            print(f"  read {len(jmap)} tracklet numbers: {sorted(set(jmap.values()))}")
+        except Exception as e:
+            print(f"  jersey OCR unavailable ({type(e).__name__}: {e}); players stay unnamed")
 
     from src.perception.synthetic_broadcast import BroadcastClip, BroadcastFrame
 

@@ -128,7 +128,7 @@ Pause-to-overlay in **~50 ms** (budget: 2 s); re-watching the same moment is a
 0 ms cache hit. The rationale is a second click — the overlay renders instantly
 from the value model; the LLM is called only on demand.
 
-**77 tests pass** end to end (`python -m pytest -q`).
+**78 tests pass** end to end (`python -m pytest -q`).
 
 ---
 
@@ -136,7 +136,7 @@ from the value model; the LLM is called only on demand.
 
 ```bash
 pip install -e .        # core: numpy, polars, pyarrow, matplotlib, torch, lightgbm, scikit-learn, opencv
-python -m pytest -q     # 77 tests, no data or GPU required
+python -m pytest -q     # 78 tests, no data or GPU required
 ```
 
 Everything below runs on synthetic data with no downloads:
@@ -257,11 +257,25 @@ forward (the homography propagates within one camera shot) — and writes a
 candidate action with its EPV, and a per-action rationale). The page (pure
 HTML/JS canvas, no framework) plays back instantly with **no live inference**.
 
-The **assistant** operates on the pre-computed candidate set — "show the drive",
-"why not shoot?", "pass instead", "best play", "next option" — so it switches the
-drawn play and explains it fully offline (no API key). Frames the confidence gate
-rejects (replay, close-up, occlusion) show "no clear recommendation" rather than a
-guess. It's the same value model and overlay validated above, wrapped in a UI.
+**Jersey OCR** (EasyOCR, tracklet-voted over the shot) names the players it can
+read, so the overlay shows `#7`, `#34`… and the rationale/assistant reference them
+by number (back-facing/blurred players correctly stay unnamed).
+
+The **assistant** works two ways. Offline (no key) it's rule-based over the
+pre-computed candidates — "show the drive", "why not shoot?", "pass to #7", "best
+play", "next option" — switching the drawn play and explaining it. Set
+`ANTHROPIC_API_KEY` and `serve_webapp.py` enables a **Claude** backend
+(`claude-opus-4-8`) for free-form questions; it answers from the same candidate
+context and can change the displayed action via a forced tool call, echoing only
+the model's own numbers. The page tries the backend and falls back to rule-based
+if it's off. Frames the confidence gate rejects (replay, close-up, occlusion) show
+"no clear recommendation" rather than a guess — the same value model and overlay
+validated above, wrapped in a UI.
+
+```bash
+export ANTHROPIC_API_KEY=...     # optional — enables the free-form Claude assistant
+python scripts/serve_webapp.py
+```
 
 ---
 
@@ -273,11 +287,11 @@ src/
   state/      court geometry, the state schema, conformance validator
   value/      candidate actions, sub-models, V(s), scoring, simulator, real-data builder
   perception/ camera, homography, tracking, teams, identity, clock, state-from-CV,
-              overlay, + real video: calibrate, video (YOLO), realvideo adapter
+              overlay, + real video: calibrate, video (YOLO/Roboflow), jersey OCR, realvideo adapter
   render/     top-down court renderer + video overlay
   llm/        strict rationale schema, context, Claude + offline generators
-  app/        pause-to-overlay analyzer + webexport (overlay-spec JSON) + webapp/ (the UI)
-tests/        unit + end-to-end tests (77)
+  app/        pause-to-overlay analyzer + webexport (overlay JSON) + chat_backend (Claude) + webapp/ (UI)
+tests/        unit + end-to-end tests (78)
 scripts/      demo_phase{1..4}.py, demo_realvideo.py, calibrate.py, fetch_youtube.py,
               build_webapp.py, serve_webapp.py,
               train_phase2.py, fetch_real_data.py, build_real_cache.py, train_real.py

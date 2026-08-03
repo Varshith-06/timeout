@@ -222,6 +222,11 @@ function draw() {
     CTX.globalAlpha = 0.9; CTX.fill(); CTX.globalAlpha = 1;
     if (p.box) { const [x1,y1,x2,y2]=p.box.map((v,i)=>v*s);
       CTX.strokeStyle = 'rgba(255,255,255,.25)'; CTX.lineWidth=1; CTX.strokeRect(x1,y1,x2-x1,y2-y1); }
+    if (p.jersey != null) {   // OCR'd jersey number
+      CTX.font = '700 12px system-ui,sans-serif'; CTX.textAlign='center'; CTX.textBaseline='bottom';
+      CTX.lineWidth=3; CTX.strokeStyle='#000a'; CTX.strokeText('#'+p.jersey, x, y-8);
+      CTX.fillStyle='#fff'; CTX.fillText('#'+p.jersey, x, y-8);
+    }
   }
   // ball
   if (curRec.ball_px) { const [x,y]=P(curRec.ball_px);
@@ -321,8 +326,23 @@ function whyText(i){ const a=curRec.actions[i]; if(!a.rationale) return 'No rati
 
 document.getElementById('chatSend').onclick = send;
 document.getElementById('chatIn').addEventListener('keydown', e => { if(e.key==='Enter') send(); });
-function send(){ const el=document.getElementById('chatIn'); const q=el.value.trim(); if(!q) return;
-  say('you', q); el.value=''; setTimeout(()=>handle(q), 60); }
+async function send(){ const el=document.getElementById('chatIn'); const q=el.value.trim(); if(!q) return;
+  say('you', q); el.value='';
+  // Try the Claude backend; fall back to the offline rule-based assistant.
+  if (curRec && curRec.actions) {
+    try {
+      const payload = Object.assign({}, curRec, {_sel: selIdx});
+      const r = await fetch('/chat', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ message:q, rec:payload }) });
+      if (!r.ok) throw new Error('backend off');
+      const d = await r.json();
+      if (d.select) { const i = curRec.actions.findIndex(a => a.id === d.select); if (i>=0) selectAction(i); }
+      say('bot', d.reply || '(no reply)');
+      return;
+    } catch(e) { /* fall through to offline */ }
+  }
+  setTimeout(()=>handle(q), 40);
+}
 say('bot', "Pause on a possession and I'll show the best play. Ask me to switch it (“drive instead”) or explain it (“why?”).");
 </script>
 </body>

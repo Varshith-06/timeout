@@ -31,7 +31,7 @@ perception-models = ["ultralytics", "supervision", "transformers", "paddleocr"]
 llm = ["anthropic"]
 # Real broadcast video: clip fetchers (nba_api / yt-dlp) + detection. Local YOLO
 # via ultralytics, or a hosted Roboflow workflow via requests (no heavy dep).
-realvideo = ["nba_api", "yt-dlp", "ultralytics", "requests"]
+realvideo = ["nba_api", "yt-dlp", "ultralytics", "requests", "easyocr"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]
