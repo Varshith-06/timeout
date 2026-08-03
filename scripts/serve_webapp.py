@@ -126,8 +126,12 @@ def main(argv=None) -> int:
     handler = partial(RangeRequestHandler, directory=str(root))
     socketserver.TCPServer.allow_reuse_address = True
     url = f"http://localhost:{args.port}/index.html"
-    chat = ("Claude assistant: ON (claude-opus-4-8)" if os.environ.get("ANTHROPIC_API_KEY")
-            else "Claude assistant: OFF (set ANTHROPIC_API_KEY to enable; the offline assistant still works)")
+    if os.environ.get("GROQ_API_KEY"):
+        chat = f"LLM assistant: ON (Groq {os.environ.get('GROQ_MODEL', 'llama-3.3-70b-versatile')})"
+    elif os.environ.get("ANTHROPIC_API_KEY"):
+        chat = "LLM assistant: ON (Claude claude-opus-4-8)"
+    else:
+        chat = "LLM assistant: OFF (set GROQ_API_KEY or ANTHROPIC_API_KEY; the offline assistant still works)"
     with socketserver.TCPServer(("", args.port), handler) as httpd:
         print(f"serving {root}\n  {url}\n  {chat}\nCtrl-C to stop.")
         if not args.no_open:
