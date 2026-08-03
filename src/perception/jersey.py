@@ -21,7 +21,13 @@ from src.perception.tracking import run_tracker
 class JerseyReader:
     """EasyOCR wrapper: read a single jersey number (0-99) from a player crop."""
 
-    def __init__(self, gpu: bool = False, min_conf: float = 0.5):
+    def __init__(self, gpu: bool | None = None, min_conf: float = 0.5):
+        if gpu is None:
+            try:
+                import torch
+                gpu = torch.cuda.is_available()
+            except Exception:
+                gpu = False
         self.gpu = gpu
         self.min_conf = min_conf
         self._reader = None

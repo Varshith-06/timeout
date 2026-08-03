@@ -113,6 +113,15 @@ def _default_weights() -> str:
     return _BASKETBALL_WEIGHTS if Path(_BASKETBALL_WEIGHTS).exists() else "yolo11l.pt"
 
 
+def _auto_device() -> str:
+    """Use the GPU when a CUDA build of torch+torchvision is present, else CPU."""
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
 @dataclass
 class PretrainedYOLODetector(Detector):
     """YOLO adapter that maps the model's class *names* onto our schema.
@@ -123,15 +132,16 @@ class PretrainedYOLODetector(Detector):
     basketball model, being players-only, also skips the crowd/bench that COCO's
     ``person`` class boxes.
 
-    Defaults to CPU inference: the installed torchvision (+cpu) mismatches a
-    CUDA torch build, which breaks the NMS op on GPU. A few frames per pause on
-    CPU is fine; install a matching torchvision+cuXXX to run YOLO on the GPU.
+    Runs on the GPU automatically when a matching CUDA torch+torchvision is
+    installed (``_auto_device``); falls back to CPU otherwise. (A torchvision
+    +cpu against a CUDA torch breaks the NMS op on GPU — install a matching
+    torchvision+cuXXX to enable it.)
     """
 
     weights: str = field(default_factory=_default_weights)
     conf: float = 0.2          # player confidence
     ball_conf: float = 0.05    # the basketball is small/blurred — accept it far lower
-    device: str = "cpu"
+    device: str = field(default_factory=_auto_device)
     _model: object = None
     _clsmap: dict = None
 
