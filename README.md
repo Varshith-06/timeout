@@ -128,7 +128,7 @@ Pause-to-overlay in **~50 ms** (budget: 2 s); re-watching the same moment is a
 0 ms cache hit. The rationale is a second click — the overlay renders instantly
 from the value model; the LLM is called only on demand.
 
-**70 tests pass** end to end (`python -m pytest -q`).
+**77 tests pass** end to end (`python -m pytest -q`).
 
 ---
 
@@ -136,7 +136,7 @@ from the value model; the LLM is called only on demand.
 
 ```bash
 pip install -e .        # core: numpy, polars, pyarrow, matplotlib, torch, lightgbm, scikit-learn, opencv
-python -m pytest -q     # 70 tests, no data or GPU required
+python -m pytest -q     # 77 tests, no data or GPU required
 ```
 
 Everything below runs on synthetic data with no downloads:
@@ -237,6 +237,32 @@ occluded frames it (correctly) withholds via the confidence gate.
 > line detection can't correspond them reliably — the trained keypoint model is the
 > real path, and the ~45-second manual click calibration is the reliable stand-in.
 
+### The web app — watch, pause, ask, adjust
+
+A local single-page app turns the clip into the intended product: **play the
+footage, pause anywhere, and the best play is drawn on the frame** (arrows,
+circles, highlight, EPV label); ask **why** and read the rationale; **adjust** the
+displayed play from a ranked candidate list or by chatting with an assistant.
+
+```bash
+# 1) pre-compute recommendations across the possession (one detection pass, cached)
+python scripts/build_webapp.py --video clip.mp4 --calib calib.json --calib-time 39
+# 2) serve it (Range-enabled, so the video scrubs) and open the browser
+python scripts/serve_webapp.py            # http://localhost:8000/index.html
+```
+
+`build_webapp.py` runs the trained pipeline once — from the calibration frame
+forward (the homography propagates within one camera shot) — and writes a
+`recommendations.json` (per pause: overlay geometry in video pixels, every
+candidate action with its EPV, and a per-action rationale). The page (pure
+HTML/JS canvas, no framework) plays back instantly with **no live inference**.
+
+The **assistant** operates on the pre-computed candidate set — "show the drive",
+"why not shoot?", "pass instead", "best play", "next option" — so it switches the
+drawn play and explains it fully offline (no API key). Frames the confidence gate
+rejects (replay, close-up, occlusion) show "no clear recommendation" rather than a
+guess. It's the same value model and overlay validated above, wrapped in a UI.
+
 ---
 
 ## Layout
@@ -250,9 +276,10 @@ src/
               overlay, + real video: calibrate, video (YOLO), realvideo adapter
   render/     top-down court renderer + video overlay
   llm/        strict rationale schema, context, Claude + offline generators
-  app/        pause-to-overlay analyzer with caching + latency budget
-tests/        unit + end-to-end tests (70)
-scripts/      demo_phase{1..4}.py, demo_realvideo.py, calibrate.py,
+  app/        pause-to-overlay analyzer + webexport (overlay-spec JSON) + webapp/ (the UI)
+tests/        unit + end-to-end tests (77)
+scripts/      demo_phase{1..4}.py, demo_realvideo.py, calibrate.py, fetch_youtube.py,
+              build_webapp.py, serve_webapp.py,
               train_phase2.py, fetch_real_data.py, build_real_cache.py, train_real.py
 configs/      coaching_priors.json
 data/ models/ out/   gitignored — real games, cache, weights, artifacts

@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NBA Play Recommender</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --line:#2b323c; --txt:#e6edf3; --muted:#8b949e;
+    --off:#3b82f6; --def:#ef4444; --top:#22c55e; --ball:#f59e0b; --accent:#22c55e;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  header { padding:10px 16px; border-bottom:1px solid var(--line); display:flex;
+           align-items:baseline; gap:12px; }
+  header h1 { font-size:16px; margin:0; font-weight:650; }
+  header .sub { color:var(--muted); font-size:12px; }
+  .wrap { display:grid; grid-template-columns:1fr 360px; gap:16px; padding:16px;
+          max-width:1400px; margin:0 auto; align-items:start; }
+  @media (max-width:1000px){ .wrap{ grid-template-columns:1fr; } }
+  .stage { position:relative; background:#000; border-radius:10px; overflow:hidden;
+           border:1px solid var(--line); }
+  video { display:block; width:100%; height:auto; }
+  canvas.overlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  .controls { display:flex; align-items:center; gap:10px; padding:10px; }
+  .controls button { background:var(--panel); color:var(--txt); border:1px solid var(--line);
+    border-radius:8px; padding:7px 12px; cursor:pointer; font-size:13px; }
+  .controls button:hover { border-color:var(--accent); }
+  .controls input[type=range]{ flex:1; accent-color:var(--accent); }
+  .time { color:var(--muted); font-variant-numeric:tabular-nums; min-width:92px; text-align:right; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+           padding:14px; margin-bottom:14px; }
+  .panel h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+              margin:0 0 10px; }
+  .rec-head { display:flex; align-items:baseline; justify-content:space-between; }
+  .rec-action { font-size:18px; font-weight:700; color:var(--top); }
+  .rec-epv { font-variant-numeric:tabular-nums; }
+  .conf { color:var(--muted); font-size:12px; margin-top:4px; }
+  .gate-msg { color:var(--muted); font-style:italic; }
+  ul.cands { list-style:none; margin:0; padding:0; max-height:230px; overflow:auto; }
+  ul.cands li { display:flex; justify-content:space-between; gap:8px; padding:7px 9px;
+    border-radius:7px; cursor:pointer; border:1px solid transparent; }
+  ul.cands li:hover { background:#1c2430; }
+  ul.cands li.sel { border-color:var(--accent); background:#14261a; }
+  ul.cands li .ep { color:var(--muted); font-variant-numeric:tabular-nums; }
+  .why h3 { margin:8px 0 2px; font-size:13px; }
+  .why p { margin:2px 0 8px; }
+  .why .k { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
+  .chat-log { max-height:220px; overflow:auto; display:flex; flex-direction:column; gap:8px;
+              margin-bottom:10px; }
+  .msg { padding:8px 10px; border-radius:9px; max-width:92%; white-space:pre-wrap; }
+  .msg.you { align-self:flex-end; background:#1f6feb33; border:1px solid #1f6feb55; }
+  .msg.bot { align-self:flex-start; background:#161b22; border:1px solid var(--line); }
+  .chat-in { display:flex; gap:8px; }
+  .chat-in input { flex:1; background:#0e1116; color:var(--txt); border:1px solid var(--line);
+    border-radius:8px; padding:9px 11px; }
+  .chat-in button { background:var(--accent); color:#04140a; border:0; border-radius:8px;
+    padding:0 14px; font-weight:700; cursor:pointer; }
+  .hint { color:var(--muted); font-size:11.5px; margin-top:8px; }
+  .legend { display:flex; gap:14px; font-size:12px; color:var(--muted); padding:0 10px 8px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px;
+         vertical-align:baseline; }
+</style>
+</head>
+<body>
+<header>
+  <h1>NBA Play Recommender</h1>
+  <span class="sub">pause the footage → the best play, scored in expected points · ask why · adjust it</span>
+</header>
+
+<div class="wrap">
+  <div>
+    <div class="stage">
+      <video id="vid" playsinline></video>
+      <canvas id="ov" class="overlay"></canvas>
+    </div>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--off)"></span>offense</span>
+      <span><span class="dot" style="background:var(--def)"></span>defense</span>
+      <span><span class="dot" style="background:var(--top)"></span>ball-handler</span>
+      <span><span class="dot" style="background:var(--ball)"></span>ball</span>
+    </div>
+    <div class="controls">
+      <button id="play">▶ Play</button>
+      <input id="seek" type="range" min="0" max="100" value="0" step="0.01" />
+      <span class="time" id="time">0:00 / 0:00</span>
+    </div>
+    <div class="hint">Pause anywhere to see the recommendation. The overlay shows the selected action; pick another in the list or ask the assistant.</div>
+  </div>
+
+  <aside>
+    <div class="panel" id="recPanel">
+      <h2>Recommendation</h2>
+      <div id="recBody"><span class="gate-msg">Press play, then pause on a possession.</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Candidate actions (expected points)</h2>
+      <ul class="cands" id="cands"></ul>
+    </div>
+
+    <div class="panel why">
+      <h2>Why</h2>
+      <div id="why"><span class="gate-msg">Select an action to see the rationale.</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Assistant</h2>
+      <div class="chat-log" id="log"></div>
+      <div class="chat-in">
+        <input id="chatIn" placeholder="e.g. show the drive · why not shoot? · explain" />
+        <button id="chatSend">Send</button>
+      </div>
+      <div class="hint">Try: “drive instead”, “why not pass?”, “what about shooting”, “best play”, “next option”.</div>
+    </div>
+  </aside>
+</div>
+
+<script>
+const V = document.getElementById('vid');
+const OV = document.getElementById('ov');
+const CTX = OV.getContext('2d');
+let DATA = null, RECS = [], TIMES = [], curRec = null, selIdx = 0;
+
+const fmt = t => { t = Math.max(0, t|0); return (t/60|0) + ':' + String(t%60).padStart(2,'0'); };
+const COL = { offense:'#3b82f6', defense:'#ef4444', handler:'#22c55e', ball:'#f59e0b', top:'#22c55e' };
+
+async function boot() {
+  DATA = await (await fetch('recommendations.json')).json();
+  RECS = DATA.recommendations;
+  TIMES = RECS.map(r => r.video_time);
+  V.src = DATA.video;
+  V.addEventListener('loadedmetadata', () => { sizeCanvas(); draw(); });
+}
+boot();
+
+function sizeCanvas() {
+  OV.width = V.clientWidth; OV.height = V.clientHeight;
+}
+window.addEventListener('resize', () => { sizeCanvas(); if (V.paused) draw(); });
+
+// ---- playback + controls ----
+const playBtn = document.getElementById('play');
+playBtn.onclick = () => V.paused ? V.play() : V.pause();
+V.addEventListener('play', () => { playBtn.textContent = '⏸ Pause'; clearOverlay(); });
+V.addEventListener('pause', () => { playBtn.textContent = '▶ Play'; refresh(); });
+const seek = document.getElementById('seek');
+V.addEventListener('timeupdate', () => {
+  seek.value = V.duration ? (V.currentTime / V.duration * 100) : 0;
+  document.getElementById('time').textContent = fmt(V.currentTime) + ' / ' + fmt(V.duration||0);
+});
+seek.addEventListener('input', () => { V.currentTime = (seek.value/100) * (V.duration||0); });
+V.addEventListener('seeked', () => { if (V.paused) refresh(); });
+
+// ---- find + show the recommendation nearest the paused time ----
+function nearestRec(t) {
+  if (!RECS.length) return null;
+  let best = RECS[0], bd = Infinity;
+  for (const r of RECS) { const d = Math.abs(r.video_time - t); if (d < bd) { bd = d; best = r; } }
+  return best;
+}
+function refresh() {
+  curRec = nearestRec(V.currentTime);
+  selIdx = 0;
+  renderPanels();
+  draw();
+}
+
+function renderPanels() {
+  const rb = document.getElementById('recBody');
+  const cl = document.getElementById('cands');
+  const wh = document.getElementById('why');
+  cl.innerHTML = '';
+  if (!curRec || !curRec.actions) {
+    rb.innerHTML = '<span class="gate-msg">No clear recommendation here — low tracking confidence '
+      + '(replay, close-up, or occlusion). The system withholds rather than guess.</span>';
+    wh.innerHTML = '<span class="gate-msg">—</span>';
+    return;
+  }
+  const top = curRec.actions[selIdx];
+  rb.innerHTML = '<div class="rec-head"><span class="rec-action">' + top.label.replace(/\s*\(EPV.*/, '')
+    + '</span><span class="rec-epv">EPV <b>' + top.epv.toFixed(2) + '</b></span></div>'
+    + '<div class="conf">confidence ' + (curRec.confidence*100|0) + '% · ' + curRec.n_players
+    + ' players tracked · t=' + curRec.video_time.toFixed(1) + 's</div>';
+  curRec.actions.forEach((a, i) => {
+    const li = document.createElement('li');
+    if (i === selIdx) li.className = 'sel';
+    li.innerHTML = '<span>' + a.label.replace(/\s*\(EPV.*/, '') + '</span><span class="ep">'
+      + a.epv.toFixed(2) + '</span>';
+    li.onclick = () => { selIdx = i; renderPanels(); draw(); };
+    cl.appendChild(li);
+  });
+  renderWhy(top);
+}
+function renderWhy(a) {
+  const wh = document.getElementById('why');
+  if (!a.rationale) { wh.innerHTML = '<span class="gate-msg">(rationale not generated for this option)</span>'; return; }
+  const r = a.rationale;
+  wh.innerHTML =
+    '<h3>' + r.headline + '</h3>'
+    + '<div class="k">rationale</div><p>' + r.rationale + '</p>'
+    + '<div class="k">risk</div><p>' + r.risk + '</p>'
+    + '<div class="k">alternative</div><p>' + r.alternative + '</p>';
+}
+
+// ---- overlay drawing (video-native px -> displayed px) ----
+function clearOverlay(){ CTX.clearRect(0,0,OV.width,OV.height); }
+function scale(){ const nw = DATA.video_size[0]; return OV.width / nw; }
+function P(pt){ const s = scale(); return [pt[0]*s, pt[1]*s]; }
+
+function draw() {
+  sizeCanvas(); clearOverlay();
+  if (!V.paused || !curRec || !curRec.players) return;
+  const s = scale();
+  // players
+  for (const p of curRec.players) {
+    if (!p.foot) continue;
+    const [x,y] = P(p.foot);
+    CTX.beginPath(); CTX.arc(x, y, 6, 0, 7);
+    CTX.fillStyle = (p.team === 'offense') ? COL.offense : COL.defense;
+    CTX.globalAlpha = 0.9; CTX.fill(); CTX.globalAlpha = 1;
+    if (p.box) { const [x1,y1,x2,y2]=p.box.map((v,i)=>v*s);
+      CTX.strokeStyle = 'rgba(255,255,255,.25)'; CTX.lineWidth=1; CTX.strokeRect(x1,y1,x2-x1,y2-y1); }
+  }
+  // ball
+  if (curRec.ball_px) { const [x,y]=P(curRec.ball_px);
+    CTX.beginPath(); CTX.arc(x,y,6,0,7); CTX.fillStyle=COL.ball; CTX.fill(); }
+  // selected action
+  const a = curRec.actions && curRec.actions[selIdx];
+  if (!a) return;
+  const g = a.geometry;
+  if (g.circle) { const [x,y]=P(g.circle);
+    CTX.beginPath(); CTX.arc(x,y,16,0,7); CTX.strokeStyle=COL.top; CTX.lineWidth=3.5; CTX.stroke(); }
+  if (g.arrow) arrow(P(g.arrow[0]), P(g.arrow[1]), COL.top);
+  if (g.circle) label(P(g.circle), a.label);
+}
+function arrow(a, b, color) {
+  CTX.strokeStyle = color; CTX.fillStyle = color; CTX.lineWidth = 4;
+  CTX.beginPath(); CTX.moveTo(a[0],a[1]); CTX.lineTo(b[0],b[1]); CTX.stroke();
+  const ang = Math.atan2(b[1]-a[1], b[0]-a[0]), h = 14;
+  CTX.beginPath(); CTX.moveTo(b[0],b[1]);
+  CTX.lineTo(b[0]-h*Math.cos(ang-0.4), b[1]-h*Math.sin(ang-0.4));
+  CTX.lineTo(b[0]-h*Math.cos(ang+0.4), b[1]-h*Math.sin(ang+0.4));
+  CTX.closePath(); CTX.fill();
+}
+function label(at, text) {
+  const t = text; CTX.font = '700 14px system-ui,sans-serif';
+  const w = CTX.measureText(t).width + 14, x = at[0]-w/2, y = at[1]-34;
+  CTX.fillStyle = '#0e1116ee'; CTX.strokeStyle = COL.top; CTX.lineWidth = 2;
+  roundRect(x, y, w, 22, 6); CTX.fill(); CTX.stroke();
+  CTX.fillStyle = COL.top; CTX.textAlign='center'; CTX.textBaseline='middle';
+  CTX.fillText(t, at[0], y+11);
+}
+function roundRect(x,y,w,h,r){ CTX.beginPath(); CTX.moveTo(x+r,y);
+  CTX.arcTo(x+w,y,x+w,y+h,r); CTX.arcTo(x+w,y+h,x,y+h,r);
+  CTX.arcTo(x,y+h,x,y,r); CTX.arcTo(x,y,x+w,y,r); CTX.closePath(); }
+
+// ---- assistant (rule-based, operates on the pre-computed candidates) ----
+const log = document.getElementById('log');
+function say(who, text){ const d=document.createElement('div'); d.className='msg '+who;
+  d.textContent=text; log.appendChild(d); log.scrollTop=log.scrollHeight; }
+function selectAction(i){ selIdx=i; renderPanels(); draw(); }
+
+const ACTION_WORDS = [
+  {re:/\b(shoot|shot|jumper|three|3)\b/, kind:'SHOOT'},
+  {re:/\b(drive|attack|rim|lay ?up)\b/, kind:'DRIVE'},
+  {re:/\b(pass|kick|dish|swing|feed)\b/, kind:'PASS_TO'},
+  {re:/\b(screen|pick|ball ?screen)\b/, kind:'SCREEN_WITH'},
+  {re:/\b(reset|hold|pull ?out)\b/, kind:'RESET'},
+];
+function bestOfKind(kind){ if(!curRec||!curRec.actions) return -1;
+  return curRec.actions.findIndex(a => a.action === kind); }
+function directionIn(t){ if(/\bleft\b/.test(t))return 'left'; if(/\bright\b/.test(t))return 'right';
+  if(/\bmiddle|center\b/.test(t))return 'middle'; return null; }
+
+function handle(qRaw) {
+  const q = qRaw.toLowerCase().trim();
+  if (!curRec || !curRec.actions) { say('bot', "Pause on a possession first — I need a tracked play to talk about."); return; }
+  // best / top / recommended
+  if (/\b(best|top|recommend|optimal)\b/.test(q)) { selectAction(0);
+    say('bot', 'The top play is ' + labelOf(0) + ' at ' + epvOf(0) + ' expected points. ' + shortWhy(0)); return; }
+  // next / other option
+  if (/\b(next|another|other|cycle)\b/.test(q)) { const i=(selIdx+1)%curRec.actions.length;
+    selectAction(i); say('bot', 'Now showing ' + labelOf(i) + ' (' + epvOf(i) + ' EPV). ' + shortWhy(i)); return; }
+  // why / explain
+  if (/\b(why|explain|reason|because)\b/.test(q) && !/why not/.test(q)) {
+    say('bot', whyText(selIdx)); return; }
+  // action kind (incl. "why not X" -> switch to X and compare)
+  const dir = directionIn(q);
+  for (const {re, kind} of ACTION_WORDS) {
+    if (re.test(q)) {
+      let i = kind === 'DRIVE' && dir
+        ? curRec.actions.findIndex(a => a.action==='DRIVE' && a.direction===dir)
+        : bestOfKind(kind);
+      if (i < 0) i = bestOfKind(kind);
+      if (i < 0) { say('bot', "There's no legal " + kind.replace('_',' ').toLowerCase() + " for this handler here."); return; }
+      selectAction(i);
+      const cmp = i===0 ? "It's actually the top-rated option." :
+        'The top play (' + labelOf(0) + ', ' + epvOf(0) + ') rates higher, but here it is: ' ;
+      say('bot', 'Showing ' + labelOf(i) + ' at ' + epvOf(i) + ' expected points. ' + cmp + shortWhy(i)); return;
+    }
+  }
+  // pass to #N
+  const m = q.match(/#?\s*(\d{1,2})/);
+  if (m && /pass|to\b/.test(q)) {
+    const jersey = +m[1];
+    const i = curRec.actions.findIndex(a => a.action==='PASS_TO' &&
+      (playerJersey(a.target) === jersey));
+    if (i>=0){ selectAction(i); say('bot','Passing to #'+jersey+': '+labelOf(i)+' at '+epvOf(i)+' EPV. '+shortWhy(i)); return; }
+    say('bot', "I can't identify a #"+jersey+" receiver here (jersey OCR isn't run on this clip). Try 'pass instead' for the best pass."); return;
+  }
+  say('bot', "I can switch the play or explain it. Try: “show the drive”, “why not shoot?”, “pass instead”, “best play”, or “next option”.");
+}
+function labelOf(i){ return curRec.actions[i].label.replace(/\s*\(EPV.*/,''); }
+function epvOf(i){ return curRec.actions[i].epv.toFixed(2); }
+function playerJersey(id){ const p=(curRec.players||[]).find(p=>p.id===id); return p? p.jersey : null; }
+function shortWhy(i){ const r=curRec.actions[i].rationale; return r? r.headline+'.' : ''; }
+function whyText(i){ const a=curRec.actions[i]; if(!a.rationale) return 'No rationale was generated for '+labelOf(i)+'.';
+  const r=a.rationale; return labelOf(i)+' — '+r.rationale+' Risk: '+r.risk; }
+
+document.getElementById('chatSend').onclick = send;
+document.getElementById('chatIn').addEventListener('keydown', e => { if(e.key==='Enter') send(); });
+function send(){ const el=document.getElementById('chatIn'); const q=el.value.trim(); if(!q) return;
+  say('you', q); el.value=''; setTimeout(()=>handle(q), 60); }
+say('bot', "Pause on a possession and I'll show the best play. Ask me to switch it (“drive instead”) or explain it (“why?”).");
+</script>
+</body>
+</html>
