@@ -46,6 +46,9 @@ def main(argv=None) -> int:
     ap.add_argument("--min-confidence", type=float, default=0.5,
                     help="confidence gate for showing a recommendation (lower = more coverage)")
     ap.add_argument("--min-players", type=int, default=7, help="min tracked players to show a recommendation")
+    ap.add_argument("--live-ball", type=int, default=0, metavar="FRAMES",
+                    help="require a REAL ball detection within +/-FRAMES of the pause (live play); "
+                         "0 = off. Use with a detector that finds the ball reliably (roboflow).")
     ap.add_argument("--max-seconds", type=float, default=None, help="absolute end time (s); default = clip end")
     ap.add_argument("--no-jersey", action="store_true", help="skip jersey-number OCR (faster)")
     ap.add_argument("--roster", default=None,
@@ -140,7 +143,11 @@ def main(argv=None) -> int:
             lrec = recover_tracking(sub, roster_rows=[], stride=args.stride)
             ci = i - lo
             state, conf = build_state_from_cv(lrec, ci, roster=roster)
-            showable = (state is not None and state.handler is not None
+            live = True
+            if args.live_ball > 0:
+                k = args.live_ball
+                live = any(lrec.ball_seen[max(0, ci - k):ci + k + 1])   # real ball near this pause
+            showable = (state is not None and state.handler is not None and live
                         and conf >= args.min_confidence
                         and state.context.n_players_observed >= args.min_players)
             if showable:

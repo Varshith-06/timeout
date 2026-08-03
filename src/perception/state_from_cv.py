@@ -118,6 +118,7 @@ class Recovery:
     diagnostics: dict = field(default_factory=dict)
     roster_tids: set = field(default_factory=set)   # tracks kept as real players
     tid_jersey: dict = field(default_factory=dict)  # track_id -> voted jersey number
+    ball_seen: list = field(default_factory=list)   # per frame: was a real ball DETECTED (not interpolated)
 
 
 def recover_tracking(clip, roster_rows, stride: int = 5) -> Recovery:
@@ -217,9 +218,10 @@ def recover_tracking(clip, roster_rows, stride: int = 5) -> Recovery:
         if votes:
             tid_jersey[t.track_id] = max(set(votes), key=votes.count)
 
+    ball_seen = [p is not None for p in ball_px_seen]   # real detection vs interpolated fill
     return Recovery(frames_court, velocities, homographies, ball_court, ball_possessor,
                     homog_ok, tracklets, team_labels, identities, stride, diagnostics,
-                    roster_tids=roster_tids, tid_jersey=tid_jersey)
+                    roster_tids=roster_tids, tid_jersey=tid_jersey, ball_seen=ball_seen)
 
 
 def _fallback_pid(tid: int) -> int:
