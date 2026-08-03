@@ -154,10 +154,18 @@ seek.addEventListener('input', () => { V.currentTime = (seek.value/100) * (V.dur
 V.addEventListener('seeked', () => { if (V.paused) refresh(); });
 
 // ---- find + show the recommendation nearest the paused time ----
+// Prefer the nearest frame that actually HAS a recommendation within a window, so
+// pausing on a clear play snaps to a valid nearby frame instead of a gated one.
+const SNAP_WINDOW = 2.0;   // seconds
 function nearestRec(t) {
   if (!RECS.length) return null;
-  let best = RECS[0], bd = Infinity;
-  for (const r of RECS) { const d = Math.abs(r.video_time - t); if (d < bd) { bd = d; best = r; } }
+  let bestShown = null, bsd = Infinity, best = RECS[0], bd = Infinity;
+  for (const r of RECS) {
+    const d = Math.abs(r.video_time - t);
+    if (d < bd) { bd = d; best = r; }
+    if (r.actions && d < bsd) { bsd = d; bestShown = r; }
+  }
+  if (bestShown && bsd <= SNAP_WINDOW) return bestShown;
   return best;
 }
 function refresh() {
@@ -222,10 +230,11 @@ function draw() {
     CTX.globalAlpha = 0.9; CTX.fill(); CTX.globalAlpha = 1;
     if (p.box) { const [x1,y1,x2,y2]=p.box.map((v,i)=>v*s);
       CTX.strokeStyle = 'rgba(255,255,255,.25)'; CTX.lineWidth=1; CTX.strokeRect(x1,y1,x2-x1,y2-y1); }
-    if (p.jersey != null) {   // OCR'd jersey number
+    const tag = p.name || (p.jersey != null ? '#'+p.jersey : null);   // roster name, else number
+    if (tag) {
       CTX.font = '700 12px system-ui,sans-serif'; CTX.textAlign='center'; CTX.textBaseline='bottom';
-      CTX.lineWidth=3; CTX.strokeStyle='#000a'; CTX.strokeText('#'+p.jersey, x, y-8);
-      CTX.fillStyle='#fff'; CTX.fillText('#'+p.jersey, x, y-8);
+      CTX.lineWidth=3; CTX.strokeStyle='#000a'; CTX.strokeText(tag, x, y-8);
+      CTX.fillStyle='#fff'; CTX.fillText(tag, x, y-8);
     }
   }
   // ball

@@ -21,7 +21,7 @@ from src.perception.tracking import run_tracker
 class JerseyReader:
     """EasyOCR wrapper: read a single jersey number (0-99) from a player crop."""
 
-    def __init__(self, gpu: bool = False, min_conf: float = 0.4):
+    def __init__(self, gpu: bool = False, min_conf: float = 0.5):
         self.gpu = gpu
         self.min_conf = min_conf
         self._reader = None
@@ -78,7 +78,11 @@ def assign_jerseys(frames, reader: JerseyReader | None = None, samples: int = 5,
                 votes[r[0]] += r[1]          # weight by confidence
         if not votes:
             continue
-        number = votes.most_common(1)[0][0]
+        number, weight = votes.most_common(1)[0]
+        # Require corroboration (multiple/confident reads) so one bad frame doesn't
+        # stamp a wrong number like 64/84 across a whole tracklet.
+        if weight < 1.0:
+            continue
         out[t.track_id] = number
         for _, det in t.history:
             det.jersey_read = number

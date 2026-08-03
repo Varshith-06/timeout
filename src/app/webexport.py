@@ -81,7 +81,8 @@ def _label(sc) -> str:
 
 def build_overlay_spec(recovery, clip, frame_idx: int, state, scored_actions,
                        names: dict | None = None, coaching: CoachingPriors | None = None,
-                       rationale_top_k: int = 6, video_time: float | None = None) -> dict:
+                       rationale_top_k: int = 6, video_time: float | None = None,
+                       roster=None) -> dict:
     """Build the JSON overlay spec for one analyzed frame.
 
     ``rationale_top_k`` full rationales are generated (the actions a user is likely
@@ -93,18 +94,21 @@ def build_overlay_spec(recovery, clip, frame_idx: int, state, scored_actions,
     rim_px = _rim_px(state, recovery.homographies[frame_idx], handler_px)
     boxes, jerseys = _roster_boxes(recovery, frame_idx)
 
-    # OCR'd jersey numbers become the player names the rationale echoes ("#7").
+    # Jersey numbers become player names the rationale echoes — a roster upgrades
+    # "#7" to the real name ("Curry") when the number is on it.
     names = dict(names or {})
     for pid, j in jerseys.items():
-        names.setdefault(pid, f"#{j}")
+        names.setdefault(pid, roster.label(j) if roster is not None else f"#{j}")
 
     players = []
     for p in state.players:
+        j = jerseys.get(p.player_id)
         players.append({
             "id": int(p.player_id),
             "team": "offense" if p.team_id == state.offense_team_id else "defense",
             "is_handler": handler is not None and p.player_id == handler.player_id,
-            "jersey": jerseys.get(p.player_id),
+            "jersey": j,
+            "name": (roster.label(j) if (roster is not None and j is not None) else None),
             "foot": feet.get(p.player_id),
             "box": boxes.get(p.player_id),
         })

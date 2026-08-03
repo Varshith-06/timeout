@@ -117,6 +117,7 @@ class Recovery:
     stride: int
     diagnostics: dict = field(default_factory=dict)
     roster_tids: set = field(default_factory=set)   # tracks kept as real players
+    tid_jersey: dict = field(default_factory=dict)  # track_id -> voted jersey number
 
 
 def recover_tracking(clip, roster_rows, stride: int = 5) -> Recovery:
@@ -209,9 +210,16 @@ def recover_tracking(clip, roster_rows, stride: int = 5) -> Recovery:
         "ball_recall": float(np.mean([b is not None for b in ball_court])) if ball_court else 0.0,
         "n_tracklets": len(tracklets),
     }
+    # Voted jersey per track (from OCR stamped on detections) — for roster linking.
+    tid_jersey = {}
+    for t in tracklets:
+        votes = [d.jersey_read for _, d in t.history if d.jersey_read is not None]
+        if votes:
+            tid_jersey[t.track_id] = max(set(votes), key=votes.count)
+
     return Recovery(frames_court, velocities, homographies, ball_court, ball_possessor,
                     homog_ok, tracklets, team_labels, identities, stride, diagnostics,
-                    roster_tids=roster_tids)
+                    roster_tids=roster_tids, tid_jersey=tid_jersey)
 
 
 def _fallback_pid(tid: int) -> int:
@@ -253,7 +261,7 @@ def composite_confidence(n_players, homog_ok, id_confs, ball_recent) -> float:
 
 
 def build_state_from_cv(recovery: Recovery, frame_idx: int, offense_team_id=None,
-                        roster_jersey=None):
+                        roster_jersey=None, roster=None):
     """Build a Phase 1 State for one broadcast frame. Returns (state, confidence).
 
     offense_team_id: if known, forces which side is offense; otherwise inferred
@@ -295,10 +303,35 @@ def build_state_from_cv(recovery: Recovery, frame_idx: int, offense_team_id=None
     if not players_meta:
         return None, 0.0
 
+    # Roster override: re-label the two colour clusters to the real teams using the
+    # jersey numbers read within each, so offense/defense is correct by *number*
+    # (fixes similar-colour mislabels). Unread players inherit their cluster's team.
+    if roster is not None and recovery.tid_jersey:
+        from collections import Counter
+        votes = {}
+        for tid, pid, team_id, *_ in players_meta:
+            rt = roster.team_of.get(recovery.tid_jersey.get(tid))
+            if rt is not None:
+                votes.setdefault(team_id, Counter())[rt] += 1
+        if votes:
+            cmap = {c: cnt.most_common(1)[0][0] for c, cnt in votes.items()}
+            roster_teams = list(dict.fromkeys(roster.team_of.values()))
+            used = set(cmap.values())
+            for c in {m[2] for m in players_meta}:
+                if c not in cmap:                      # cluster with no jersey evidence
+                    left = [t for t in roster_teams if t not in used]
+                    cmap[c] = left[0] if left else roster_teams[0]; used.add(cmap[c])
+            players_meta = [(tid, pid, cmap.get(tm, tm), x, y, vx, vy)
+                            for (tid, pid, tm, x, y, vx, vy) in players_meta]
+
     # Offense inferred robustly across the whole clip (see infer_offense_team).
-    if offense_team_id is None:
-        offense_team_id = infer_offense_team(recovery)
-        if offense_team_id is None:
+    # With a roster override the team ids are roster ids, so infer_offense_team's
+    # cluster-label vote no longer matches — read offense off the (overridden)
+    # players as the team of the player nearest the ball.
+    team_ids = {m[2] for m in players_meta}
+    if offense_team_id not in team_ids:
+        offense_team_id = None if roster is not None else infer_offense_team(recovery)
+        if offense_team_id not in team_ids:
             nearest = min(players_meta, key=lambda m: (m[3] - ball[0]) ** 2 + (m[4] - ball[1]) ** 2)
             offense_team_id = nearest[2]
 

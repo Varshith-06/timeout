@@ -42,9 +42,14 @@ def main(argv=None) -> int:
     ap.add_argument("--stride", type=int, default=8, help="detection stride (video frames)")
     ap.add_argument("--context", type=float, default=2.0,
                     help="seconds of context each side of a pause for local tracking/roster")
-    ap.add_argument("--cadence", type=float, default=1.0, help="seconds between exported recommendations")
+    ap.add_argument("--cadence", type=float, default=0.5, help="seconds between exported recommendations")
+    ap.add_argument("--min-confidence", type=float, default=0.5,
+                    help="confidence gate for showing a recommendation (lower = more coverage)")
+    ap.add_argument("--min-players", type=int, default=7, help="min tracked players to show a recommendation")
     ap.add_argument("--max-seconds", type=float, default=None, help="absolute end time (s); default = clip end")
     ap.add_argument("--no-jersey", action="store_true", help="skip jersey-number OCR (faster)")
+    ap.add_argument("--roster", default=None,
+                    help="roster.json (jersey -> team/name/stats): fixes team labels, names players")
     ap.add_argument("--detector", choices=["yolo", "roboflow"], default="yolo")
     ap.add_argument("--rf-workspace", default="varshith-ublcu")
     ap.add_argument("--rf-workflow", default="general-segmentation-api")
@@ -77,6 +82,11 @@ def main(argv=None) -> int:
         print(f"detector: local YOLO ({detector.weights})")
     sm = SubModels.load(args.models)
     vm = ValueModel.load(Path(args.models) / "value.pt")
+    roster = None
+    if args.roster:
+        from src.perception.roster import Roster
+        roster = Roster.load(args.roster)
+        print(f"roster: {len(roster.team_of)} numbers across teams {sorted(set(roster.team_of.values()))}")
 
     # Assemble the shot list: each calibration covers one camera shot, anchored at
     # its click-time. More shots -> more of the game is covered.
@@ -129,10 +139,14 @@ def main(argv=None) -> int:
             sub = subclip(lo, hi)
             lrec = recover_tracking(sub, roster_rows=[], stride=args.stride)
             ci = i - lo
-            state, conf = build_state_from_cv(lrec, ci)
-            if state is not None and is_showable(state, conf) and state.handler is not None:
+            state, conf = build_state_from_cv(lrec, ci, roster=roster)
+            showable = (state is not None and state.handler is not None
+                        and conf >= args.min_confidence
+                        and state.context.n_players_observed >= args.min_players)
+            if showable:
                 scored = score_actions(state, enumerate_actions(state), sm, vm)
-                recs.append(build_overlay_spec(lrec, sub, ci, state, scored, names={}, video_time=round(t, 2)))
+                recs.append(build_overlay_spec(lrec, sub, ci, state, scored, names={},
+                                               video_time=round(t, 2), roster=roster))
             else:
                 recs.append({"video_time": round(t, 2), "frame_idx": i, "gate": False,
                              "confidence": round(float(conf), 3)})
