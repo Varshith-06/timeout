@@ -140,6 +140,12 @@ def interactive_calibrate(frame_rgb: np.ndarray, out_path=None, time=None) -> Ca
     skip a landmark that is off-screen. After 4+ clicks it solves, overlays the
     projected court lines for you to verify, and (if out_path) saves the result.
     """
+    import matplotlib
+    for backend in ("TkAgg", "QtAgg", "MacOSX"):     # ensure an INTERACTIVE backend
+        try:
+            matplotlib.use(backend, force=True); break
+        except Exception:
+            continue
     import matplotlib.pyplot as plt
 
     h, w = frame_rgb.shape[:2]
@@ -175,9 +181,11 @@ def interactive_calibrate(frame_rgb: np.ndarray, out_path=None, time=None) -> Ca
 
 def _verify_plot(frame_rgb, calib: Calibration):
     """Overlay the projected court lines on the frame so the user can eyeball fit."""
-    import matplotlib.pyplot as plt
     import cv2
-    from src.perception.video_overlay import court_polylines
+    from src.perception.video_overlay import court_polylines  # this pins Agg...
+    import matplotlib
+    matplotlib.use("TkAgg", force=True)                        # ...switch back to interactive
+    import matplotlib.pyplot as plt
 
     h, w = frame_rgb.shape[:2]
     H_c2p = np.linalg.inv(calib.H)
