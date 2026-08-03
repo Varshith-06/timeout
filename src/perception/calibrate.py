@@ -149,8 +149,16 @@ def interactive_calibrate(frame_rgb: np.ndarray, out_path=None, time=None) -> Ca
     finish early. After it solves it overlays the projected court and asks you to
     **A**ccept or **R**edo — so a bad fit is never forced. (out_path -> saved.)
     """
+    # Import the court drawing FIRST — video_overlay pins the Agg backend at import
+    # time, so do it before we lock in the interactive backend (otherwise the first
+    # _draw_reference call flips us back to Agg and plt.show() becomes non-blocking).
+    from src.perception.video_overlay import court_polylines  # noqa: F401
     _use_interactive_backend()
+    import matplotlib
     import matplotlib.pyplot as plt
+    if "agg" == matplotlib.get_backend().lower():
+        raise RuntimeError("no interactive matplotlib backend (need Tk/Qt) — cannot open the "
+                           "calibration window on this display.")
 
     h, w = frame_rgb.shape[:2]
     while True:                                     # loop until accepted or aborted
