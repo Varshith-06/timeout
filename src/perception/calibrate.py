@@ -126,76 +126,120 @@ def _draw_reference(ax, highlight_xy):
         ax.plot(poly[:, 0], poly[:, 1], color="#888", lw=1)
     for _, (cx, cy), _ in CLICK_LANDMARKS:
         ax.plot(cx, cy, "o", color="#ccc", ms=4)
-    ax.plot(highlight_xy[0], highlight_xy[1], "o", color="red", ms=12)
+    if highlight_xy is not None:
+        ax.plot(highlight_xy[0], highlight_xy[1], "o", color="red", ms=12)
     ax.set_aspect("equal"); ax.set_xlim(-4, 98); ax.set_ylim(-4, 54)
-    ax.set_title("Click THIS point in the frame  (right-click to skip)")
     ax.axis("off")
+
+
+def _use_interactive_backend():
+    import matplotlib
+    for backend in ("TkAgg", "QtAgg", "MacOSX"):
+        try:
+            matplotlib.use(backend, force=True); return
+        except Exception:
+            continue
 
 
 def interactive_calibrate(frame_rgb: np.ndarray, out_path=None, time=None) -> Calibration | None:
     """Guided click-to-calibrate on one frame. Returns the solved Calibration.
 
-    frame_rgb: (H, W, 3) image. For each landmark it highlights the target on a
-    court diagram; left-click the matching spot in the frame, or right-click to
-    skip a landmark that is off-screen. After 4+ clicks it solves, overlays the
-    projected court lines for you to verify, and (if out_path) saves the result.
+    Controls: **left-click** the highlighted landmark, **right-click** to skip one
+    that's off-screen, **u / backspace** to undo the last point, **Enter** to
+    finish early. After it solves it overlays the projected court and asks you to
+    **A**ccept or **R**edo — so a bad fit is never forced. (out_path -> saved.)
     """
-    import matplotlib
-    for backend in ("TkAgg", "QtAgg", "MacOSX"):     # ensure an INTERACTIVE backend
-        try:
-            matplotlib.use(backend, force=True); break
-        except Exception:
-            continue
+    _use_interactive_backend()
     import matplotlib.pyplot as plt
 
     h, w = frame_rgb.shape[:2]
-    clicks: dict = {}
-    fig, (axf, axc) = plt.subplots(1, 2, figsize=(15, 6))
-    axf.imshow(frame_rgb); axf.set_xlim(0, w); axf.set_ylim(h, 0); axf.axis("off")
+    while True:                                     # loop until accepted or aborted
+        clicks: dict = {}
+        st = {"i": 0}
+        fig, (axf, axc) = plt.subplots(1, 2, figsize=(15, 6))
 
-    for name, court_xy, desc in CLICK_LANDMARKS:
-        axc.clear(); _draw_reference(axc, court_xy)
-        axf.set_title(f"Click: {desc}   [{len(clicks)} captured]  (right-click = skip)")
-        fig.canvas.draw()
-        pts = plt.ginput(1, timeout=-1, mouse_add=1, mouse_stop=3, mouse_pop=2)
-        if pts:
-            clicks[name] = (float(pts[0][0]), float(pts[0][1]))
-            axf.plot(pts[0][0], pts[0][1], "g+", ms=12, mew=2)
-            axf.annotate(name, pts[0], color="lime", fontsize=8)
+        def redraw():
+            axf.clear(); axf.imshow(frame_rgb); axf.set_xlim(0, w); axf.set_ylim(h, 0); axf.axis("off")
+            for nm, (px, py) in clicks.items():
+                axf.plot(px, py, "g+", ms=12, mew=2); axf.annotate(nm, (px, py), color="lime", fontsize=8)
+            axc.clear()
+            i = st["i"]
+            if i < len(CLICK_LANDMARKS):
+                name, court_xy, desc = CLICK_LANDMARKS[i]
+                _draw_reference(axc, court_xy)
+                axf.set_title(f"[{i+1}/{len(CLICK_LANDMARKS)}] Click: {desc}\n"
+                              f"L-click=set · R-click=skip · u=undo · Enter=finish   "
+                              f"({len(clicks)} points set)")
+            else:
+                _draw_reference(axc, None)
+                axf.set_title(f"All landmarks visited — {len(clicks)} points set.\n"
+                              f"Press Enter to solve · u=undo")
+            fig.canvas.draw_idle()
 
-    plt.close(fig)
-    calib = solve_calibration(clicks, img_size=(w, h))
-    if calib is None:
-        print("Need at least 4 good clicks that solve — try again with more spread-out points.")
-        return None
+        def on_click(event):
+            if event.inaxes is not axf or event.xdata is None or st["i"] >= len(CLICK_LANDMARKS):
+                return
+            name = CLICK_LANDMARKS[st["i"]][0]
+            if event.button == 1:
+                clicks[name] = (float(event.xdata), float(event.ydata)); st["i"] += 1
+            elif event.button == 3:
+                clicks.pop(name, None); st["i"] += 1
+            redraw()
 
-    calib.time = time                  # anchors this calibration to its camera shot
-    _verify_plot(frame_rgb, calib)
-    print(f"Calibration solved: {len(calib.points)} points, "
-          f"median reprojection error {calib.reproj_error_ft:.2f} ft")
-    if out_path:
-        calib.save(out_path)
-        print(f"Saved -> {out_path}")
-    return calib
+        def on_key(event):
+            if event.key in ("u", "z", "backspace") and st["i"] > 0:
+                st["i"] -= 1; clicks.pop(CLICK_LANDMARKS[st["i"]][0], None); redraw()
+            elif event.key in ("enter", "return"):
+                plt.close(fig)
+            elif event.key == "escape":             # skip this whole shot
+                st["skip"] = True; plt.close(fig)
+
+        fig.canvas.mpl_connect("button_press_event", on_click)
+        fig.canvas.mpl_connect("key_press_event", on_key)
+        redraw()
+        plt.show()                                  # blocks until Enter / Esc / window closed
+
+        if st.get("skip"):
+            print("Skipped this shot."); return None
+        calib = solve_calibration(clicks, img_size=(w, h))
+        if calib is None:
+            print("Need 4+ well-spread points that solve. Retrying — press Esc to skip this shot.")
+            continue
+        calib.time = time
+        print(f"Solved: {len(calib.points)} points, reproj {calib.reproj_error_ft:.2f} ft")
+        if _verify_and_confirm(frame_rgb, calib):
+            if out_path:
+                calib.save(out_path); print(f"Saved -> {out_path}")
+            return calib
+        print("Rejected — redoing this shot.")      # loop again
 
 
-def _verify_plot(frame_rgb, calib: Calibration):
-    """Overlay the projected court lines on the frame so the user can eyeball fit."""
+def _verify_and_confirm(frame_rgb, calib: Calibration) -> bool:
+    """Overlay the projected court; return True to accept, False to redo."""
     import cv2
-    from src.perception.video_overlay import court_polylines  # this pins Agg...
-    import matplotlib
-    matplotlib.use("TkAgg", force=True)                        # ...switch back to interactive
+    from src.perception.video_overlay import court_polylines   # pins Agg...
+    _use_interactive_backend()                                 # ...switch back
     import matplotlib.pyplot as plt
 
     h, w = frame_rgb.shape[:2]
     H_c2p = np.linalg.inv(calib.H)
-    fig, ax = plt.subplots(figsize=(10, 6))
+    res = {"accept": True}
+    fig, ax = plt.subplots(figsize=(11, 6))
     ax.imshow(frame_rgb); ax.set_xlim(0, w); ax.set_ylim(h, 0); ax.axis("off")
     for poly in court_polylines():
         px = cv2.perspectiveTransform(poly.reshape(-1, 1, 2).astype(np.float64), H_c2p).reshape(-1, 2)
         ax.plot(px[:, 0], px[:, 1], color="yellow", lw=1.5)
-    for name, (x, y) in calib.points.items():
+    for _, (x, y) in calib.points.items():
         ax.plot(x, y, "r+", ms=10)
-    ax.set_title(f"Verify: yellow lines should sit on the real court "
-                 f"(reproj {calib.reproj_error_ft:.2f} ft). Close to accept.")
+    ax.set_title(f"Fit check — yellow should sit on the real court (reproj {calib.reproj_error_ft:.2f} ft).\n"
+                 f"Press  A = accept   ·   R = redo this shot")
+
+    def on_key(event):
+        if event.key in ("r", "R"):
+            res["accept"] = False; plt.close(fig)
+        elif event.key in ("a", "A", "enter", "return"):
+            res["accept"] = True; plt.close(fig)
+
+    fig.canvas.mpl_connect("key_press_event", on_key)
     plt.show()
+    return res["accept"]

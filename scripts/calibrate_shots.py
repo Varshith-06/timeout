@@ -33,8 +33,8 @@ def main(argv=None) -> int:
     for i, t in enumerate(args.times, 1):
         out = f"{args.prefix}{i}.json"
         print(f"\n=== shot {i}/{len(args.times)} @ {t:.1f}s -> {out} ===")
-        print("Click each highlighted landmark (right-click to skip off-screen ones); "
-              "close the verify window to continue.")
+        print("L-click landmark · R-click skip point · u=undo · Enter=solve, then A=accept / R=redo. "
+              "For a close-up/replay with no clean lines, press Esc to skip the whole shot.")
         frame = vid.frame_at_time(t)
         if frame is None:
             print(f"  could not read frame at {t:.1f}s — skipping"); continue
