@@ -53,18 +53,20 @@ class Calibration:
     points: dict = field(default_factory=dict)   # landmark name -> [px, py]
     img_size: tuple = (0, 0)           # (width, height)
     reproj_error_ft: float = 0.0
+    time: float | None = None          # video time (s) it was clicked; anchors its camera shot
 
     def save(self, path):
         Path(path).write_text(json.dumps({
             "H": self.H.tolist(), "points": {k: list(v) for k, v in self.points.items()},
             "img_size": list(self.img_size), "reproj_error_ft": self.reproj_error_ft,
+            "time": self.time,
         }, indent=2), encoding="utf-8")
 
     @staticmethod
     def load(path):
         d = json.loads(Path(path).read_text(encoding="utf-8"))
         return Calibration(np.array(d["H"]), {k: tuple(v) for k, v in d["points"].items()},
-                           tuple(d["img_size"]), d.get("reproj_error_ft", 0.0))
+                           tuple(d["img_size"]), d.get("reproj_error_ft", 0.0), d.get("time"))
 
 
 def solve_calibration(clicks: dict, img_size=(0, 0)) -> Calibration | None:
@@ -130,7 +132,7 @@ def _draw_reference(ax, highlight_xy):
     ax.axis("off")
 
 
-def interactive_calibrate(frame_rgb: np.ndarray, out_path=None) -> Calibration | None:
+def interactive_calibrate(frame_rgb: np.ndarray, out_path=None, time=None) -> Calibration | None:
     """Guided click-to-calibrate on one frame. Returns the solved Calibration.
 
     frame_rgb: (H, W, 3) image. For each landmark it highlights the target on a
@@ -161,6 +163,7 @@ def interactive_calibrate(frame_rgb: np.ndarray, out_path=None) -> Calibration |
         print("Need at least 4 good clicks that solve — try again with more spread-out points.")
         return None
 
+    calib.time = time                  # anchors this calibration to its camera shot
     _verify_plot(frame_rgb, calib)
     print(f"Calibration solved: {len(calib.points)} points, "
           f"median reprojection error {calib.reproj_error_ft:.2f} ft")

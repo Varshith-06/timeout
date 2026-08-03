@@ -128,7 +128,7 @@ Pause-to-overlay in **~50 ms** (budget: 2 s); re-watching the same moment is a
 0 ms cache hit. The rationale is a second click — the overlay renders instantly
 from the value model; the LLM is called only on demand.
 
-**78 tests pass** end to end (`python -m pytest -q`).
+**79 tests pass** end to end (`python -m pytest -q`).
 
 ---
 
@@ -136,7 +136,7 @@ from the value model; the LLM is called only on demand.
 
 ```bash
 pip install -e .        # core: numpy, polars, pyarrow, matplotlib, torch, lightgbm, scikit-learn, opencv
-python -m pytest -q     # 78 tests, no data or GPU required
+python -m pytest -q     # 79 tests, no data or GPU required
 ```
 
 Everything below runs on synthetic data with no downloads:
@@ -251,6 +251,22 @@ python scripts/build_webapp.py --video clip.mp4 --calib calib.json --calib-time 
 python scripts/serve_webapp.py            # http://localhost:8000/index.html
 ```
 
+**More coverage — multiple camera shots.** One calibration covers one camera shot
+(from its click-time to the next cut). To cover more of the game, calibrate a frame
+in each shot (the click-time is saved into the file) and pass them all — the build
+processes each shot bounded by the next and merges the results into one timeline:
+
+```bash
+python scripts/calibrate.py --video game.mp4 --time 39  --out shot1.json
+python scripts/calibrate.py --video game.mp4 --time 95  --out shot2.json
+python scripts/calibrate.py --video game.mp4 --time 148 --out shot3.json
+python scripts/build_webapp.py --video game.mp4 --shots shot1.json shot2.json shot3.json
+```
+
+Within a long shot the optical-flow homography still drifts (a trained court-keypoint
+model — per-frame calibration — is the eventual fix); across shots, more
+calibrations = more of the game overlaid.
+
 `build_webapp.py` runs the trained pipeline once — from the calibration frame
 forward (the homography propagates within one camera shot) — and writes a
 `recommendations.json` (per pause: overlay geometry in video pixels, every
@@ -291,7 +307,7 @@ src/
   render/     top-down court renderer + video overlay
   llm/        strict rationale schema, context, Claude + offline generators
   app/        pause-to-overlay analyzer + webexport (overlay JSON) + chat_backend (Claude) + webapp/ (UI)
-tests/        unit + end-to-end tests (78)
+tests/        unit + end-to-end tests (79)
 scripts/      demo_phase{1..4}.py, demo_realvideo.py, calibrate.py, fetch_youtube.py,
               build_webapp.py, serve_webapp.py,
               train_phase2.py, fetch_real_data.py, build_real_cache.py, train_real.py

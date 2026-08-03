@@ -30,12 +30,15 @@ import numpy as np  # noqa: E402
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Pre-compute web-app recommendations for a clip")
     ap.add_argument("--video", required=True)
-    ap.add_argument("--calib", required=True)
+    ap.add_argument("--calib", help="single calibration.json (one camera shot)")
+    ap.add_argument("--shots", nargs="+",
+                    help="multiple calibration files, each carrying its own click-time "
+                         "(calibrate.py --time). Covers several camera shots -> more of the game.")
     ap.add_argument("--models", default="models/phase2")
     ap.add_argument("--out", default="out/webapp")
     ap.add_argument("--calib-time", type=float, default=39.0,
-                    help="video time (s) the calibration was clicked; the homography is "
-                         "propagated FORWARD from here (one camera shot), so processing starts here")
+                    help="click-time (s) for a single --calib that has none stored; each shot's "
+                         "homography propagates FORWARD from its click-time within one camera shot")
     ap.add_argument("--stride", type=int, default=8, help="detection stride (video frames)")
     ap.add_argument("--context", type=float, default=2.0,
                     help="seconds of context each side of a pause for local tracking/roster")
@@ -57,93 +60,98 @@ def main(argv=None) -> int:
     from src.value.state_value import ValueModel
     from src.value.submodels import SubModels
 
+    from src.perception.synthetic_broadcast import BroadcastClip, BroadcastFrame
+
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     vid = VideoSource(args.video)
     duration = vid.frame_count / vid.fps
-    start_sec = max(0.0, args.calib_time)
-    end = min(duration, args.max_seconds) if args.max_seconds else duration
-    print(f"video: {vid.width}x{vid.height}, {vid.fps:.0f} fps, {duration:.1f}s "
-          f"(processing {start_sec:.1f}-{end:.1f}s from the calibration frame, stride {args.stride})")
+    hard_end = min(duration, args.max_seconds) if args.max_seconds else duration
+    sec_per_frame = args.stride / vid.fps
+    half = max(1, int(round(args.context / sec_per_frame)))
+    print(f"video: {vid.width}x{vid.height}, {vid.fps:.0f} fps, {duration:.1f}s")
 
     if args.detector == "roboflow":
         detector = RoboflowWorkflowDetector(workspace=args.rf_workspace, workflow_id=args.rf_workflow)
     else:
         detector = PretrainedYOLODetector()
         print(f"detector: local YOLO ({detector.weights})")
-
-    calib = Calibration.load(args.calib)
     sm = SubModels.load(args.models)
     vm = ValueModel.load(Path(args.models) / "value.pt")
 
-    # One detection + tracking pass over [calib_time, end]: the tracker initialises
-    # from the calibration's clicked points at the FIRST processed frame (= the
-    # calibration frame), then optical-flow-propagates the homography forward.
-    print("Detecting + tracking from the calibration frame forward (one pass)...")
-    clip = build_realvideo_clip(vid, detector, calib, pause_sec=end,
-                                window_sec=end - start_sec, stride=args.stride)
-    vid.release()
-    sec_per_frame = args.stride / vid.fps
+    # Assemble the shot list: each calibration covers one camera shot, anchored at
+    # its click-time. More shots -> more of the game is covered.
+    shots = []
+    if args.shots:
+        for f in args.shots:
+            c = Calibration.load(f)
+            if c.time is None:
+                print(f"{f} has no stored click-time — recalibrate with "
+                      f"'calibrate.py --time <sec>' so it knows which shot it anchors."); return 2
+            shots.append((c, f, float(c.time)))
+    elif args.calib:
+        c = Calibration.load(args.calib)
+        shots.append((c, args.calib, float(c.time if c.time is not None else args.calib_time)))
+    else:
+        print("provide --calib (one shot) or --shots a.json b.json ... (multiple shots)"); return 2
+    shots.sort(key=lambda s: s[2])
 
-    # The single calibration + optical-flow homography is valid only within ONE
-    # camera shot. Past the first replay/angle cut the homography is meaningless,
-    # so truncate there — that's the coherent segment the calibration covers.
-    cut_idx = next((i for i, f in enumerate(clip.frames) if i > 0 and f.cut), None)
-    if cut_idx is not None:
-        cut_t = start_sec + cut_idx * sec_per_frame
-        clip.frames = clip.frames[:cut_idx]
-        end = min(end, cut_t)
-        print(f"camera cut at ~{cut_t:.1f}s — limiting to the calibrated shot "
-              f"({start_sec:.1f}-{cut_t:.1f}s, {len(clip.frames)} frames)")
+    def process_shot(calib, start_sec, end_bound):
+        """Detect+track one camera shot from its calibration, export its pauses."""
+        clip = build_realvideo_clip(vid, detector, calib, pause_sec=end_bound,
+                                    window_sec=end_bound - start_sec, stride=args.stride)
+        # The homography is valid only within this shot — truncate at the first cut.
+        cut_idx = next((i for i, f in enumerate(clip.frames) if i > 0 and f.cut), None)
+        shot_end = end_bound
+        if cut_idx is not None:
+            clip.frames = clip.frames[:cut_idx]
+            shot_end = start_sec + cut_idx * sec_per_frame
+        if not args.no_jersey:
+            try:
+                from src.perception.jersey import assign_jerseys
+                assign_jerseys(clip.frames)
+            except Exception as e:
+                print(f"  jersey OCR unavailable ({type(e).__name__}); players stay unnamed")
 
-    # Jersey OCR once over the whole shot: stamps a tracklet-voted number onto the
-    # (shared) detections, so the per-window states below inherit them for free.
-    if not args.no_jersey:
-        try:
-            from src.perception.jersey import assign_jerseys
-            print("Reading jersey numbers (EasyOCR)...")
-            jmap = assign_jerseys(clip.frames)
-            print(f"  read {len(jmap)} tracklet numbers: {sorted(set(jmap.values()))}")
-        except Exception as e:
-            print(f"  jersey OCR unavailable ({type(e).__name__}: {e}); players stay unnamed")
+        def subclip(lo, hi):
+            sub = BroadcastClip()
+            for j, f in enumerate(clip.frames[lo:hi]):
+                sub.frames.append(BroadcastFrame(
+                    frame_idx=j, camera=f.camera, detections=f.detections, kp_pixels=f.kp_pixels,
+                    kp_court=f.kp_court, kp_conf=f.kp_conf, clock_read=f.clock_read, cut=f.cut, image=f.image))
+            return sub
 
-    from src.perception.synthetic_broadcast import BroadcastClip, BroadcastFrame
+        recs, t = [], start_sec
+        while t <= shot_end:
+            i = int(round((t - start_sec) / sec_per_frame))
+            if i >= len(clip.frames):
+                break
+            lo, hi = max(0, i - half), min(len(clip.frames), i + half + 1)
+            sub = subclip(lo, hi)
+            lrec = recover_tracking(sub, roster_rows=[], stride=args.stride)
+            ci = i - lo
+            state, conf = build_state_from_cv(lrec, ci)
+            if state is not None and is_showable(state, conf) and state.handler is not None:
+                scored = score_actions(state, enumerate_actions(state), sm, vm)
+                recs.append(build_overlay_spec(lrec, sub, ci, state, scored, names={}, video_time=round(t, 2)))
+            else:
+                recs.append({"video_time": round(t, 2), "frame_idx": i, "gate": False,
+                             "confidence": round(float(conf), 3)})
+            t += args.cadence
+        return recs, shot_end
 
-    def subclip(lo: int, hi: int) -> BroadcastClip:
-        """A re-indexed local window (frame_idx 0..n) reusing the detections/kp."""
-        sub = BroadcastClip()
-        for j, f in enumerate(clip.frames[lo:hi]):
-            sub.frames.append(BroadcastFrame(
-                frame_idx=j, camera=f.camera, detections=f.detections, kp_pixels=f.kp_pixels,
-                kp_court=f.kp_court, kp_conf=f.kp_conf, clock_read=f.clock_read, cut=f.cut, image=f.image))
-        return sub
-
-    # State is built on a LOCAL window per pause, not the whole shot: the roster
-    # gate and velocities assume a short window, and the homography is most
-    # trustworthy near each moment. Detection already ran once; re-running only the
-    # cheap tracking/roster per window is fast.
-    half = max(1, int(round(args.context / sec_per_frame)))
     recommendations = []
-    n_shown = 0
-    t = start_sec
-    while t <= end:
-        i = int(round((t - start_sec) / sec_per_frame))
-        if i >= len(clip.frames):
-            break
-        lo, hi = max(0, i - half), min(len(clip.frames), i + half + 1)
-        sub = subclip(lo, hi)
-        lrec = recover_tracking(sub, roster_rows=[], stride=args.stride)
-        ci = i - lo
-        state, conf = build_state_from_cv(lrec, ci)
-        if state is not None and is_showable(state, conf) and state.handler is not None:
-            scored = score_actions(state, enumerate_actions(state), sm, vm)
-            spec = build_overlay_spec(lrec, sub, ci, state, scored, names={}, video_time=round(t, 2))
-            recommendations.append(spec)
-            n_shown += 1
-        else:
-            recommendations.append({"video_time": round(t, 2), "frame_idx": i, "gate": False,
-                                    "confidence": round(float(conf), 3)})
-        t += args.cadence
-    print(f"processed {len(clip.frames)} frames in {half*2+1}-frame windows")
+    for k, (calib, fname, t0) in enumerate(shots):
+        end_bound = min(hard_end, shots[k + 1][2] if k + 1 < len(shots) else hard_end)
+        if end_bound - t0 < args.cadence:
+            continue
+        print(f"shot {k+1}/{len(shots)}: {Path(fname).name} @ {t0:.1f}s (up to {end_bound:.1f}s)...")
+        recs, shot_end = process_shot(calib, t0, end_bound)
+        recommendations.extend(recs)
+        shown = sum(1 for r in recs if r.get("actions"))
+        print(f"  covered {t0:.1f}-{shot_end:.1f}s: {shown}/{len(recs)} pauses with a recommendation")
+    recommendations.sort(key=lambda r: r["video_time"])
+    vid.release()
+    n_shown = sum(1 for r in recommendations if r.get("actions"))
 
     # Copy the video next to the JSON so the app serves both from one directory.
     dst = out / "clip.mp4"

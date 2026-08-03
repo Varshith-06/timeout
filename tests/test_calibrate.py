@@ -45,6 +45,16 @@ def test_save_load_roundtrip(tmp_path):
     assert loaded.img_size == (1280, 720)
 
 
+def test_time_persists_for_multishot(tmp_path):
+    # The click-time anchors a calibration to its camera shot in a multi-shot build.
+    cam = BroadcastCamera(focal=850)
+    calib = solve_calibration(_synthetic_clicks(cam), img_size=(1280, 720))
+    assert calib.time is None
+    calib.time = 95.0
+    p = tmp_path / "shot2.json"; calib.save(p)
+    assert Calibration.load(p).time == 95.0
+
+
 def test_tracker_stable_on_static_frame():
     cv2 = pytest.importorskip("cv2")
     cam = BroadcastCamera(focal=850)  # default 1280x720 pixel space

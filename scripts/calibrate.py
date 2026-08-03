@@ -36,6 +36,7 @@ def main(argv=None) -> int:
 
     from src.perception.calibrate import interactive_calibrate
 
+    click_time = None
     if args.image:
         import matplotlib.image as mpimg
         frame = (mpimg.imread(args.image)[..., :3] * (255 if mpimg.imread(args.image).max() <= 1 else 1)).astype("uint8")
@@ -44,13 +45,15 @@ def main(argv=None) -> int:
         vid = VideoSource(args.video)
         print(f"video: {vid.width}x{vid.height}, {vid.fps:.1f} fps, {vid.frame_count} frames")
         frame = vid.frame_at_index(args.frame) if args.frame is not None else vid.frame_at_time(args.time)
+        # The click-time anchors this calibration's camera shot (for multi-shot builds).
+        click_time = (args.frame / vid.fps) if args.frame is not None else args.time
         vid.release()
         if frame is None:
             print("could not read that frame"); return 1
     else:
         print("provide --video or --image"); return 1
 
-    calib = interactive_calibrate(np.asarray(frame), out_path=args.out)
+    calib = interactive_calibrate(np.asarray(frame), out_path=args.out, time=click_time)
     return 0 if calib is not None else 1
 
 
