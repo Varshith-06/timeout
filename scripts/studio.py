@@ -38,7 +38,8 @@ import socketserver  # noqa: E402
 
 WORK = ROOT / "out" / "studio"
 WORK.mkdir(parents=True, exist_ok=True)
-STATE = {"video": None, "shots": [], "building": False, "built": False, "log": ""}
+STATE = {"video": None, "meta": None, "loading": False, "load_error": None,
+         "shots": [], "building": False, "built": False, "log": ""}
 
 
 def _json(handler, obj, code=200):
@@ -105,7 +106,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             from src.perception.calibrate import CLICK_LANDMARKS
             return _json(self, [{"name": n, "xy": list(xy), "desc": d} for n, xy, d in CLICK_LANDMARKS])
         if path == "/api/status":
-            return _json(self, {k: STATE[k] for k in ("building", "built", "log", "shots")})
+            return _json(self, {"loading": STATE["loading"], "load_error": STATE["load_error"],
+                                "video_ready": STATE["video"] is not None, "meta": STATE["meta"],
+                                "building": STATE["building"], "built": STATE["built"],
+                                "log": STATE["log"], "shots": STATE["shots"]})
         if path == "/api/frame":
             t = re.search(r"t=([\d.]+)", self.path)
             try:
@@ -147,13 +151,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             return _json(self, {"error": "bad json"}, 400)
         if self.path == "/api/source":
-            try:
-                STATE["video"] = str(_load_source(body["kind"], body["value"],
-                                                  body.get("start"), body.get("end")))
-                STATE["shots"] = []; STATE["built"] = False
-                return _json(self, {"ok": True, **_video_meta(STATE["video"])})
-            except Exception as e:
-                return _json(self, {"error": f"{type(e).__name__}: {e}"}, 400)
+            # Load asynchronously (a URL download can take a while) — the page polls
+            # /api/status for a spinner instead of blocking on this request.
+            STATE.update(video=None, meta=None, loading=True, load_error=None, shots=[], built=False)
+
+            def load():
+                try:
+                    p = _load_source(body["kind"], body["value"], body.get("start"), body.get("end"))
+                    STATE["meta"] = _video_meta(p); STATE["video"] = str(p)
+                except Exception as e:
+                    STATE["load_error"] = f"{type(e).__name__}: {e}"
+                STATE["loading"] = False
+
+            threading.Thread(target=load, daemon=True).start()
+            return _json(self, {"ok": True, "loading": True})
         if self.path == "/api/calibrate":
             return self._calibrate(body)
         if self.path == "/api/build":
@@ -229,9 +240,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
-    socketserver.TCPServer.allow_reuse_address = True
+    http.server.ThreadingHTTPServer.allow_reuse_address = True
     chat = "Groq" if os.environ.get("GROQ_API_KEY") else ("Claude" if os.environ.get("ANTHROPIC_API_KEY") else "offline")
-    with socketserver.TCPServer(("", port), Handler) as httpd:
+    with http.server.ThreadingHTTPServer(("", port), Handler) as httpd:
         print(f"NBA Play Recommender studio:  http://localhost:{port}\n  assistant: {chat}\nCtrl-C to stop.")
         try:
             httpd.serve_forever()
