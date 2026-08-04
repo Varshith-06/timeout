@@ -50,6 +50,46 @@ def _smooth_possessor(poss: list, window: int = 2) -> list:
     return out
 
 
+def track_ball(seen: list, gate_px: float = 200.0, reacquire_after: int = 3,
+               pos_alpha: float = 0.6, vel_alpha: float = 0.5, damping: float = 0.7) -> list:
+    """Constant-velocity ball tracker over a per-frame (x, y)-or-None detection list.
+
+    Predicts pos + vel each frame. A detection within ``gate_px`` of the prediction
+    updates the track (smoothing position and velocity); a detection farther than
+    that is treated as an outlier (false positive) and ignored while the track
+    coasts on velocity — unless we've missed ``reacquire_after`` frames, in which
+    case we snap to the detection (a genuine pass/shot moved the ball). Gaps coast.
+    Returns a smoothed, gap-filled pixel trajectory (all-None if never seen).
+    """
+    n = len(seen)
+    out: list = [None] * n
+    pos = None
+    vel = np.zeros(2)
+    missed = 0
+    for i in range(n):
+        det = None if seen[i] is None else np.asarray(seen[i], dtype=float)
+        if pos is None:                                   # acquire
+            if det is not None:
+                pos = det.copy(); vel = np.zeros(2); out[i] = (float(pos[0]), float(pos[1]))
+            continue
+        pred = pos + vel
+        if det is not None and (np.linalg.norm(det - pred) <= gate_px or missed >= reacquire_after):
+            vel = vel_alpha * vel + (1 - vel_alpha) * (det - pos)
+            pos = pos_alpha * det + (1 - pos_alpha) * pred
+            missed = 0
+        else:                                             # outlier or gap -> coast
+            pos = pred; vel = vel * damping; missed += 1
+        out[i] = (float(pos[0]), float(pos[1]))
+    first = next((p for p in out if p is not None), None)  # backfill leading gap
+    if first is not None:
+        for i in range(n):
+            if out[i] is None:
+                out[i] = first
+            else:
+                break
+    return out
+
+
 def _interpolate_track(seen: list) -> list:
     """Fill None gaps in a per-frame (x, y) pixel track by linear interpolation.
 
@@ -180,12 +220,13 @@ def recover_tracking(clip, roster_rows, stride: int = 5) -> Recovery:
     roster_tids = _select_roster(frames_court)
     frames_court = [{t: xy for t, xy in fc.items() if t in roster_tids} for fc in frames_court]
 
-    # Temporal ball track: the detector sees the small, fast ball only
-    # intermittently. Interpolate its PIXEL path across the gaps so every frame
-    # has a ball position, then read possession (nearest roster player) on every
-    # frame — so the analyzed pause has a handler even if its own frame missed
-    # the ball. Pixel space, not court: the ball is off the court plane in flight.
-    ball_px = _interpolate_track(ball_px_seen)
+    # Temporal ball TRACK: the detector sees the small, fast ball only
+    # intermittently and with false positives (heads, logos, the rim). A
+    # constant-velocity tracker predicts the ball, gates out implausible jumps
+    # (rejecting bad detections), coasts through gaps, and re-acquires on a real
+    # pass/shot — a smooth, robust PIXEL path, far better than connecting raw
+    # detections. Possession is then the nearest roster player each frame.
+    ball_px = track_ball(ball_px_seen)
     ball_possessor = []
     for i in range(len(clip.frames)):
         tdets = {t: d for t, d in per_frame_track_det[i].items() if t in roster_tids}

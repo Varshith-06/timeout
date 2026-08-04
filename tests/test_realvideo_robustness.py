@@ -2,7 +2,7 @@
 ball interpolation, and handler smoothing."""
 from src.perception.video import _class_map, _match_class, _roboflow_predictions
 from src.perception.state_from_cv import (_interpolate_track, _select_roster,
-                                          _smooth_possessor)
+                                          _smooth_possessor, track_ball)
 from src.state.court import COURT_WIDTH
 
 
@@ -46,6 +46,27 @@ def test_interpolate_track_fills_interior_and_holds_ends():
 
 def test_interpolate_track_all_none():
     assert _interpolate_track([None, None]) == [None, None]
+
+
+def test_track_ball_rejects_outlier():
+    # Ball moving smoothly right at ~10px/frame, with one wild false positive at t=3.
+    seen = [(0.0, 0.0), (10.0, 0.0), (20.0, 0.0), (900.0, 900.0), (40.0, 0.0), (50.0, 0.0)]
+    out = track_ball(seen, gate_px=100.0)
+    # The outlier must NOT drag the track to (900, 900) — it should stay near the line.
+    assert out[3][0] < 100 and out[3][1] < 100
+    assert abs(out[5][0] - 50.0) < 40 and abs(out[5][1]) < 20
+
+
+def test_track_ball_coasts_through_gaps_and_reacquires():
+    seen = [(0.0, 0.0), (10.0, 0.0), None, None, (40.0, 0.0)]
+    out = track_ball(seen)
+    assert all(p is not None for p in out)          # gaps filled
+    assert out[2][0] > out[1][0] and out[3][0] > out[2][0]   # coasted forward, not stuck
+    assert abs(out[4][0] - 40.0) < 15                # re-locked toward the detection
+
+
+def test_track_ball_all_none():
+    assert track_ball([None, None, None]) == [None, None, None]
 
 
 def test_select_roster_keeps_interior_drops_sideline():
