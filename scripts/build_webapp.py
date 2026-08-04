@@ -143,7 +143,7 @@ def main(argv=None) -> int:
                 break
             lo, hi = max(0, i - half), min(len(clip.frames), i + half + 1)
             sub = subclip(lo, hi)
-            lrec = recover_tracking(sub, roster_rows=[], stride=args.stride)
+            lrec = recover_tracking(sub, roster_rows=[], stride=args.stride, fps=vid.fps)
             ci = i - lo
             state, conf = build_state_from_cv(lrec, ci, roster=roster)
             live = True

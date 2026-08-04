@@ -78,7 +78,7 @@ def main(argv=None) -> int:
     clip = build_realvideo_clip(vid, detector, calib, args.pause, args.window, args.stride)
     vid.release()
 
-    rec = recover_tracking(clip, roster_rows=[], stride=args.stride)
+    rec = recover_tracking(clip, roster_rows=[], stride=args.stride, fps=vid.fps)
     d = rec.diagnostics
     print(f"recovered: homography valid {d['homog_valid_rate']:.0%}, "
           f"mean {d['mean_players']:.1f} players, {d['n_tracklets']} tracklets")

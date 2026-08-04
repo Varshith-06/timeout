@@ -86,12 +86,13 @@ class VideoSource:
 
 
 def looks_like_ref(rgb: np.ndarray, bbox) -> bool:
-    """True if a person's torso looks like a referee's uniform.
+    """True only if a torso is a clear NBA referee's *solid gray* uniform.
 
-    Two ref styles, both ~grayscale (low colour saturation): NBA refs wear solid
-    *gray* (uniform mid-brightness — distinct from a white jersey, which is bright,
-    or black, which is dark); other leagues wear black-and-white *stripes* (bimodal
-    brightness). Coloured team jerseys have high saturation and are excluded.
+    Gray = nearly colourless (very low saturation) AND uniform mid-brightness
+    (not a bright white jersey, not black, and low variance so a high-contrast
+    two-tone jersey isn't mistaken for a ref). Deliberately conservative: removing
+    a real player is worse than missing a ref. (No 'striped' rule — NBA refs wear
+    gray, and that rule mis-flagged shadowed white/gold jerseys as refs.)
     """
     import cv2
     x1, y1, x2, y2 = [int(v) for v in bbox]
@@ -105,12 +106,7 @@ def looks_like_ref(rgb: np.ndarray, bbox) -> bool:
     hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
     sat = float(hsv[..., 1].mean())
     val = hsv[..., 2].astype(float)
-    if sat >= 50:                                        # coloured jersey -> a player
-        return False
-    mean_v, std_v = float(val.mean()), float(val.std())
-    gray = 70 < mean_v < 165 and std_v < 45              # uniform mid-gray (NBA)
-    striped = (val < 70).mean() > 0.18 and (val > 165).mean() > 0.18  # black+white
-    return gray or striped
+    return sat < 40 and 70 < float(val.mean()) < 160 and float(val.std()) < 40
 
 
 def torso_embedding(rgb: np.ndarray, bbox) -> np.ndarray:

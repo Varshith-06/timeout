@@ -161,7 +161,7 @@ class Recovery:
     ball_seen: list = field(default_factory=list)   # per frame: was a real ball DETECTED (not interpolated)
 
 
-def recover_tracking(clip, roster_rows, stride: int = 5) -> Recovery:
+def recover_tracking(clip, roster_rows, stride: int = 5, fps: float = 25.0) -> Recovery:
     """Run detection->tracking->homography->teams->identity over a clip."""
     tracker = run_tracker(clip.frames)
     tracklets = tracker.all_tracklets(min_len=3)
@@ -178,7 +178,7 @@ def recover_tracking(clip, roster_rows, stride: int = 5) -> Recovery:
     temporal = TemporalHomography(window=5)
     frames_court, homographies, ball_court, homog_ok = [], [], [], []
     ball_px_seen: list = []
-    dt = stride / 25.0
+    dt = stride / float(fps or 25.0)   # seconds between sampled frames (fps-correct velocities)
 
     for i, bf in enumerate(clip.frames):
         res = solve_homography(bf.kp_pixels, bf.kp_court, bf.kp_conf)
