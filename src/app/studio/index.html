@@ -117,7 +117,7 @@ async function pollLoad(){
   if(s.video_ready){
     META=s.meta; $('srcMsg').textContent=`loaded (${META.duration}s, ${META.w}×${META.h})`;
     LANDMARKS=await (await fetch('/api/landmarks')).json();
-    const sug=await (await fetch('/api/suggest')).json(); shotTimes=sug.times;
+    shotTimes=[Math.min(5, META.duration*0.25)];   // default frame; drag the slider to a clear one
     $('c-calib').style.display=''; $('s2').classList.add('active'); startShot(0);
     return;
   }
