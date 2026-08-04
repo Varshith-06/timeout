@@ -40,7 +40,7 @@ def looks_like_placeholder(video, detector=None) -> bool:
 def build_realvideo_clip(video, detector, calibration: Calibration,
                          pause_sec: float, window_sec: float, stride: int,
                          detect_workers: int = 1, exclude_refs: bool = True,
-                         ball_seed=None) -> BroadcastClip:
+                         ball_seed=None, max_shot_sec: float = 45.0) -> BroadcastClip:
     """Build a BroadcastClip from the ``window_sec`` of video before ``pause_sec``.
 
     ``detect_workers`` > 1 runs the (independent) per-frame detections concurrently
@@ -61,25 +61,32 @@ def build_realvideo_clip(video, detector, calibration: Calibration,
     names = list(calibration.points.keys())
     court_pts = np.array([_LANDMARK_COURT[n] for n in names], dtype=float)
 
-    # Read the frames (sequential disk decode), then detect (optionally parallel).
-    frames = []                                    # (idx, rgb, gray)
+    # Read frames until the FIRST camera cut (the calibration is only valid within
+    # one shot) or a max span — so we never detect the whole rest of a long clip.
+    max_frames = int(max_shot_sec * video.fps / stride)
+    frames = []                                    # (idx, rgb, gray, cut)
+    cutdet = CutDetector(threshold=0.5)
     idx = 0
     for f in range(start, end + 1, stride):
         rgb = video.frame_at_index(f)
         if rgb is None:
             continue
-        frames.append((idx, rgb, video.gray(rgb)))
+        cut = cutdet.update(cv2.resize(rgb, (64, 36)))
+        frames.append((idx, rgb, video.gray(rgb), cut))
+        first = idx == 0
         idx += 1
+        if (cut and not first) or idx >= max_frames:   # end of this shot -> stop reading
+            break
 
     if detect_workers > 1 and len(frames) > 1:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=detect_workers) as ex:
             dets = list(ex.map(lambda t: detector.detect(t[1], t[0]), frames))
     else:
-        dets = [detector.detect(rgb, i) for i, rgb, _ in frames]
+        dets = [detector.detect(rgb, i) for i, rgb, _, _ in frames]
 
     # Drop referee-looking players, and seed the ball on the first frame.
-    for (i, rgb, _), fd in zip(frames, dets):
+    for (i, rgb, _, _), fd in zip(frames, dets):
         kept = []
         for d in fd.detections:
             if d.cls == "player" and exclude_refs and looks_like_ref(rgb, d.bbox):
@@ -94,19 +101,15 @@ def build_realvideo_clip(video, detector, calibration: Calibration,
 
     clip = BroadcastClip()
     tracker: HomographyTracker | None = None
-    cutdet = CutDetector(threshold=0.5)
-    for (i, rgb, gray), det in zip(frames, dets):
+    for (i, rgb, gray, cut), det in zip(frames, dets):
         if tracker is None:
             tracker = HomographyTracker(gray, calibration)
             kp = np.array([calibration.points[n] for n in names], dtype=float)
         else:
             tracker.update(gray)           # propagate H via optical flow
             kp = tracker.pts.reshape(-1, 2)
-
-        cut = cutdet.update(cv2.resize(rgb, (64, 36)))
         if cut and tracker is not None:    # a cut breaks the calibration
             tracker = HomographyTracker(gray, calibration)
-
         clip.frames.append(BroadcastFrame(
             frame_idx=i, camera=cam, detections=det,
             kp_pixels=kp.copy(), kp_court=court_pts.copy(), kp_conf=np.ones(len(names)),
