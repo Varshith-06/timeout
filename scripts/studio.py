@@ -165,16 +165,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             threading.Thread(target=load, daemon=True).start()
             return _json(self, {"ok": True, "loading": True})
-        if self.path == "/api/calibrate":
-            return self._calibrate(body)
-        if self.path == "/api/build":
-            return self._build(body)
+        try:
+            if self.path == "/api/calibrate":
+                return self._calibrate(body)
+            if self.path == "/api/build":
+                return self._build(body)
+        except Exception as e:
+            return _json(self, {"ok": False, "error": f"{type(e).__name__}: {e}"}, 200)
         self.send_error(404)
 
     def _calibrate(self, body):
         from src.perception.calibrate import solve_calibration
+        if not STATE["video"] or not STATE["meta"]:
+            return _json(self, {"ok": False, "error": "no clip loaded — load a clip first"}, 200)
         clicks = {k: tuple(v) for k, v in body.get("clicks", {}).items()}
-        meta = _video_meta(STATE["video"])
+        meta = STATE["meta"]                              # cached at load; don't re-open
         calib = solve_calibration(clicks, img_size=(meta["w"], meta["h"]))
         if calib is None:
             return _json(self, {"ok": False, "error": "need 4+ well-spread points"}, 200)

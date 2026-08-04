@@ -144,7 +144,8 @@ $('click').onclick = e => {
 $('skipBtn').onclick=()=>{ if(li<LANDMARKS.length){ li++; updatePrompt(); drawDiagram(); } };
 $('undoBtn').onclick=()=>{ if(ballMode){ballMode=false;ball=null;updatePrompt();drawClicks();return;}
   if(li>0){ li--; delete clicks[LANDMARKS[li].name]; updatePrompt(); drawClicks(); drawDiagram(); } };
-$('doneBtn').onclick=()=>{ ballMode=true; updatePrompt(); };
+$('doneBtn').onclick=()=>{ if(!ballMode){ ballMode=true; $('doneBtn').textContent='Skip ball & save'; updatePrompt(); }
+  else { saveShot(); } };
 
 function updatePrompt(){
   if(ballMode){ $('prompt').innerHTML='🏀 Click the <b>BALL</b> on the frame.'; $('landmarkDesc').textContent=''; return; }
@@ -170,13 +171,19 @@ function drawDiagram(){ const c=$('diagram'),g=c.getContext('2d'); g.clearRect(0
 }
 
 async function saveShot(){
-  $('calibMsg').textContent='solving…';
-  const r=await fetch('/api/calibrate',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({time:shotTimes[shotIdx],clicks,ball})});
-  const d=await r.json();
-  if(!d.ok){ $('calibMsg').textContent=d.error||'need more points'; ballMode=false; updatePrompt(); return; }
+  $('calibMsg').innerHTML='<span class="spin"></span> solving…';
+  let d;
+  try{ const r=await fetch('/api/calibrate',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({time:shotTimes[shotIdx],clicks,ball})}); d=await r.json(); }
+  catch(e){ $('calibMsg').textContent='error: '+e.message; ballMode=false; return; }
+  if(!d.ok){
+    $('prompt').innerHTML='<b style="color:#f59e0b">'+(d.error||'need 4+ well-spread points')+
+      '</b> — add more landmarks, then Done.';
+    $('calibMsg').textContent=''; ballMode=false; $('doneBtn').textContent='Done → click the ball'; return;
+  }
   $('calibMsg').textContent=`saved (reproj ${d.reproj} ft)`;
-  $('shotStatus').textContent=`${d.n_shots} shot(s) calibrated`;
+  $('shotStatus').textContent=`✓ ${d.n_shots} shot(s) calibrated`;
+  $('prompt').innerHTML='<b style="color:#22c55e">✓ Calibrated!</b> Add another shot, or click <b>Build the app ▶</b> →';
   $('doneBtn').style.display='none';$('skipBtn').style.display='none';$('undoBtn').style.display='none';
   $('addShotBtn').style.display=''; $('buildBtn').style.display='';
 }
