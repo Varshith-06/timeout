@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NBA Play Recommender — Studio</title>
+<style>
+  :root{--bg:#0e1116;--panel:#161b22;--line:#2b323c;--txt:#e6edf3;--muted:#8b949e;--accent:#22c55e;}
+  *{box-sizing:border-box;} body{margin:0;background:var(--bg);color:var(--txt);
+    font:14px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
+  header{padding:12px 18px;border-bottom:1px solid var(--line);}
+  header h1{margin:0;font-size:16px;font-weight:650;}
+  header span{color:var(--muted);font-size:12px;}
+  .wrap{max-width:1200px;margin:0 auto;padding:18px;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px;}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 12px;}
+  input[type=text]{background:#0e1116;color:var(--txt);border:1px solid var(--line);border-radius:8px;
+    padding:9px 11px;width:100%;}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+  button{background:var(--accent);color:#04140a;border:0;border-radius:8px;padding:9px 15px;
+    font-weight:700;cursor:pointer;} button.ghost{background:var(--panel);color:var(--txt);border:1px solid var(--line);}
+  button:disabled{opacity:.4;cursor:default;}
+  .muted{color:var(--muted);} .step{opacity:.4;} .step.active{opacity:1;}
+  .calib{display:grid;grid-template-columns:1fr 300px;gap:16px;align-items:start;}
+  @media(max-width:900px){.calib{grid-template-columns:1fr;}}
+  .stage{position:relative;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#000;}
+  .stage img{display:block;width:100%;} .stage canvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair;}
+  #diagram{background:#0e1116;border:1px solid var(--line);border-radius:10px;width:100%;}
+  .prompt{font-weight:650;margin:6px 0;} .hint{color:var(--muted);font-size:12px;}
+  .pill{display:inline-block;background:#14261a;border:1px solid var(--accent);border-radius:20px;padding:2px 10px;font-size:12px;}
+  iframe{width:100%;height:80vh;border:1px solid var(--line);border-radius:12px;}
+  ol{margin:0;padding-left:18px;} li{margin:3px 0;}
+</style>
+</head>
+<body>
+<header><h1>NBA Play Recommender — Studio</h1>
+  <span>upload a clip or paste a link → click the court + ball → get the pause-to-overlay app</span></header>
+<div class="wrap">
+
+  <div class="card" id="c-source">
+    <h2><span class="step active">1</span> · Load a clip</h2>
+    <p class="muted">Paste a YouTube link (a short segment is best) or the path to a local video file on this machine.</p>
+    <div class="row"><input id="src" type="text" placeholder="https://youtube.com/watch?v=…  or  C:\\path\\to\\clip.mp4" /></div>
+    <div class="row" style="margin-top:10px">
+      <span class="muted">URL only:</span>
+      <input id="start" type="text" placeholder="start 8:00" style="width:120px" />
+      <input id="end" type="text" placeholder="end 12:00" style="width:120px" />
+      <button id="loadBtn">Load clip</button>
+      <span id="srcMsg" class="muted"></span>
+    </div>
+  </div>
+
+  <div class="card" id="c-calib" style="display:none">
+    <h2><span class="step" id="s2">2</span> · Calibrate <span class="pill" id="shotPill">shot 1</span></h2>
+    <div class="calib">
+      <div>
+        <div class="prompt" id="prompt">Click the highlighted court landmark on the frame.</div>
+        <div class="stage"><img id="frame" /><canvas id="click"></canvas></div>
+        <div class="row" style="margin-top:10px">
+          <button class="ghost" id="skipBtn">Skip point</button>
+          <button class="ghost" id="undoBtn">Undo</button>
+          <button id="doneBtn">Done → click the ball</button>
+          <span id="calibMsg" class="muted"></span>
+        </div>
+        <div class="hint">Click 6–8 well-spread line intersections (paint corners, three-point breaks, half-court/sideline). Then you'll click the ball.</div>
+      </div>
+      <div>
+        <canvas id="diagram" width="300" height="170"></canvas>
+        <div class="hint" id="landmarkDesc" style="margin-top:8px"></div>
+        <div style="margin-top:14px"><b id="shotStatus" class="muted"></b></div>
+        <div class="row" style="margin-top:10px">
+          <button class="ghost" id="addShotBtn" style="display:none">+ Calibrate another shot</button>
+          <select id="detector" class="ghost" style="padding:8px;border-radius:8px;background:var(--panel);color:var(--txt);border:1px solid var(--line)">
+            <option value="yolo">detector: local (fast)</option>
+            <option value="roboflow">detector: Roboflow (better ball)</option>
+          </select>
+          <button id="buildBtn" style="display:none">Build the app ▶</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="c-build" style="display:none">
+    <h2><span class="step" id="s3">3</span> · Build & play</h2>
+    <div id="buildMsg" class="muted">Building… detecting players and the ball, tracking, scoring every action. This takes a minute.</div>
+    <iframe id="player" style="display:none;margin-top:12px"></iframe>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+let META=null, LANDMARKS=[], li=0, clicks={}, ball=null, shotTimes=[], shotIdx=0, ballMode=false;
+
+// ---- Step 1: load source ----
+$('loadBtn').onclick = async () => {
+  const v=$('src').value.trim(); if(!v){return;}
+  $('srcMsg').textContent='loading…'; $('loadBtn').disabled=true;
+  const kind = /^https?:\/\//.test(v) ? 'url' : 'path';
+  try{
+    const r=await fetch('/api/source',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({kind,value:v,start:$('start').value.trim(),end:$('end').value.trim()})});
+    const d=await r.json(); if(!r.ok||d.error) throw new Error(d.error||'failed');
+    META=d; $('srcMsg').textContent=`loaded (${d.duration}s, ${d.w}×${d.h})`;
+    LANDMARKS=await (await fetch('/api/landmarks')).json();
+    const sug=await (await fetch('/api/suggest')).json(); shotTimes=sug.times;
+    $('c-calib').style.display=''; $('s2').classList.add('active');
+    startShot(0);
+  }catch(e){ $('srcMsg').textContent='error: '+e.message; $('loadBtn').disabled=false; }
+};
+
+// ---- Step 2: calibration ----
+function startShot(idx){
+  shotIdx=idx; li=0; clicks={}; ball=null; ballMode=false;
+  $('shotPill').textContent='shot '+(idx+1);
+  $('frame').onload=()=>{ sizeCanvas(); drawClicks(); };
+  $('frame').src='/api/frame?t='+shotTimes[idx];
+  $('doneBtn').style.display=''; $('skipBtn').style.display=''; $('undoBtn').style.display='';
+  updatePrompt(); drawDiagram();
+}
+function sizeCanvas(){ const c=$('click'); c.width=$('frame').clientWidth; c.height=$('frame').clientHeight; }
+window.addEventListener('resize',()=>{ if(META){sizeCanvas();drawClicks();} });
+
+function toNative(e){ const img=$('frame'); const r=img.getBoundingClientRect();
+  const x=(e.clientX-r.left)*(META.w/r.width), y=(e.clientY-r.top)*(META.h/r.height); return [x,y]; }
+function toDisplay(x,y){ const img=$('frame'); return [x*img.clientWidth/META.w, y*img.clientHeight/META.h]; }
+
+$('click').onclick = e => {
+  const [x,y]=toNative(e);
+  if(ballMode){ ball=[x,y]; drawClicks(); saveShot(); return; }
+  if(li>=LANDMARKS.length) return;
+  clicks[LANDMARKS[li].name]=[x,y]; li++; updatePrompt(); drawClicks(); drawDiagram();
+};
+$('skipBtn').onclick=()=>{ if(li<LANDMARKS.length){ li++; updatePrompt(); drawDiagram(); } };
+$('undoBtn').onclick=()=>{ if(ballMode){ballMode=false;ball=null;updatePrompt();drawClicks();return;}
+  if(li>0){ li--; delete clicks[LANDMARKS[li].name]; updatePrompt(); drawClicks(); drawDiagram(); } };
+$('doneBtn').onclick=()=>{ ballMode=true; updatePrompt(); };
+
+function updatePrompt(){
+  if(ballMode){ $('prompt').innerHTML='🏀 Click the <b>BALL</b> on the frame.'; $('landmarkDesc').textContent=''; return; }
+  if(li>=LANDMARKS.length){ $('prompt').innerHTML='All landmarks placed — click <b>Done</b> then the ball.'; return; }
+  const L=LANDMARKS[li];
+  $('prompt').innerHTML=`[${li+1}/${LANDMARKS.length}] Click: <b>${L.desc}</b>  (Skip if off-screen)`;
+  $('landmarkDesc').textContent=L.desc;
+}
+function drawClicks(){ const c=$('click'),g=c.getContext('2d'); g.clearRect(0,0,c.width,c.height);
+  for(const [n,[x,y]] of Object.entries(clicks)){ const [dx,dy]=toDisplay(x,y);
+    g.strokeStyle='#22c55e';g.lineWidth=2;g.beginPath();g.moveTo(dx-7,dy);g.lineTo(dx+7,dy);
+    g.moveTo(dx,dy-7);g.lineTo(dx,dy+7);g.stroke(); }
+  if(ball){ const [dx,dy]=toDisplay(ball[0],ball[1]); g.strokeStyle='#f59e0b';g.lineWidth=3;
+    g.beginPath();g.arc(dx,dy,10,0,7);g.stroke(); }
+}
+function drawDiagram(){ const c=$('diagram'),g=c.getContext('2d'); g.clearRect(0,0,c.width,c.height);
+  const sx=c.width/94, sy=c.height/50, X=x=>x*sx, Y=y=>c.height-y*sy;
+  g.strokeStyle='#3b4552';g.lineWidth=1;g.strokeRect(X(0),Y(50),94*sx,50*sy);
+  g.beginPath();g.moveTo(X(47),Y(0));g.lineTo(X(47),Y(50));g.stroke();
+  g.strokeRect(X(0),Y(33),19*sx,16*sy); g.strokeRect(X(75),Y(33),19*sx,16*sy);
+  LANDMARKS.forEach((L,i)=>{ g.fillStyle = i===li ? '#22c55e' : (clicks[L.name]?'#2ea043':'#586069');
+    g.beginPath();g.arc(X(L.xy[0]),Y(L.xy[1]), i===li?6:3, 0,7);g.fill(); });
+}
+
+async function saveShot(){
+  $('calibMsg').textContent='solving…';
+  const r=await fetch('/api/calibrate',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({time:shotTimes[shotIdx],clicks,ball})});
+  const d=await r.json();
+  if(!d.ok){ $('calibMsg').textContent=d.error||'need more points'; ballMode=false; updatePrompt(); return; }
+  $('calibMsg').textContent=`saved (reproj ${d.reproj} ft)`;
+  $('shotStatus').textContent=`${d.n_shots} shot(s) calibrated`;
+  $('doneBtn').style.display='none';$('skipBtn').style.display='none';$('undoBtn').style.display='none';
+  $('addShotBtn').style.display=''; $('buildBtn').style.display='';
+}
+$('addShotBtn').onclick=()=>{ const next=shotIdx+1;
+  if(next>=shotTimes.length){ shotTimes.push(Math.min(META.duration-1, shotTimes[shotIdx]+20)); }
+  $('addShotBtn').style.display='none'; startShot(next); };
+
+// ---- Step 3: build ----
+$('buildBtn').onclick=async ()=>{
+  $('c-build').style.display=''; $('s3').classList.add('active');
+  await fetch('/api/build',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({detector:$('detector').value})});
+  poll();
+};
+async function poll(){
+  const s=await (await fetch('/api/status')).json();
+  if(s.built){ $('buildMsg').textContent='Ready — pause the video to see the best play.';
+    const f=$('player'); f.src='/player'; f.style.display=''; return; }
+  if(!s.building && s.log){ $('buildMsg').textContent='Build finished but produced no recommendations. '+s.log; return; }
+  setTimeout(poll,2500);
+}
+</script>
+</body>
+</html>

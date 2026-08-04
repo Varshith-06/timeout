@@ -50,8 +50,8 @@ def _smooth_possessor(poss: list, window: int = 2) -> list:
     return out
 
 
-def track_ball(seen: list, gate_px: float = 200.0, reacquire_after: int = 3,
-               pos_alpha: float = 0.6, vel_alpha: float = 0.5, damping: float = 0.7) -> list:
+def track_ball(seen: list, gate_px: float = 280.0, reacquire_after: int = 2,
+               pos_alpha: float = 0.85, vel_alpha: float = 0.4, damping: float = 0.7) -> list:
     """Constant-velocity ball tracker over a per-frame (x, y)-or-None detection list.
 
     Predicts pos + vel each frame. A detection within ``gate_px`` of the prediction
