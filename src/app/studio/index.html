@@ -35,8 +35,11 @@
 </style>
 </head>
 <body>
-<header><h1>NBA Play Recommender — Studio</h1>
-  <span>upload a clip or paste a link → click the court + ball → get the pause-to-overlay app</span></header>
+<header style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+  <div><h1>NBA Play Recommender — Studio</h1>
+  <span>upload a clip or paste a link → click the court + ball → get the pause-to-overlay app</span></div>
+  <button id="newClipBtn" class="ghost" style="display:none;white-space:nowrap">↻ New clip</button>
+</header>
 <div class="wrap">
 
   <div class="card" id="c-source">
@@ -97,6 +100,20 @@
 <script>
 const $=id=>document.getElementById(id);
 let META=null, LANDMARKS=[], li=0, clicks={}, ball=null, shotTimes=[], shotIdx=0, ballMode=false;
+
+// On open, if a build already exists, jump straight to the player.
+(async function init(){
+  try{ const s=await (await fetch('/api/status')).json(); if(s.built) showBuiltApp(); }catch(e){}
+})();
+function showBuiltApp(){
+  $('c-source').style.display='none'; $('c-calib').style.display='none';
+  $('c-build').style.display=''; $('buildMsg').textContent='Your app — pause the video to see the best play.';
+  const f=$('player'); f.src='/player?t='+Date.now(); f.style.display='';
+  $('newClipBtn').style.display='';
+}
+$('newClipBtn').onclick=()=>{ $('c-source').style.display=''; $('c-calib').style.display='none';
+  $('c-build').style.display='none'; $('newClipBtn').style.display='none';
+  $('src').value=''; $('srcMsg').textContent=''; $('loadBtn').disabled=false; };
 
 // ---- Step 1: load source ----
 $('loadBtn').onclick = async () => {
