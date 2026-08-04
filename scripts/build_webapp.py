@@ -114,7 +114,7 @@ def main(argv=None) -> int:
         """Detect+track one camera shot from its calibration, export its pauses."""
         clip = build_realvideo_clip(vid, detector, calib, pause_sec=end_bound,
                                     window_sec=end_bound - start_sec, stride=args.stride,
-                                    detect_workers=args.detect_workers)
+                                    detect_workers=args.detect_workers, ball_seed=calib.ball_px)
         # The homography is valid only within this shot — truncate at the first cut.
         cut_idx = next((i for i, f in enumerate(clip.frames) if i > 0 and f.cut), None)
         shot_end = end_bound

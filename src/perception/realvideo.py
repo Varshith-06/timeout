@@ -39,14 +39,20 @@ def looks_like_placeholder(video, detector=None) -> bool:
 
 def build_realvideo_clip(video, detector, calibration: Calibration,
                          pause_sec: float, window_sec: float, stride: int,
-                         detect_workers: int = 1) -> BroadcastClip:
+                         detect_workers: int = 1, exclude_refs: bool = True,
+                         ball_seed=None) -> BroadcastClip:
     """Build a BroadcastClip from the ``window_sec`` of video before ``pause_sec``.
 
     ``detect_workers`` > 1 runs the (independent) per-frame detections concurrently
     — a big win for a network detector (Roboflow) where each call is I/O-bound.
-    Tracking stays sequential (it depends on the previous frame).
+    Tracking stays sequential (it depends on the previous frame). ``exclude_refs``
+    drops referee-looking (striped) person detections. ``ball_seed`` is a pixel
+    (x, y) the user clicked for the ball at the first frame — it overrides the
+    (often wrong) initial ball detection so the tracker starts locked on.
     """
     import cv2
+    from src.perception.detection import Detection, FrameDetections
+    from src.perception.video import looks_like_ref
     W, H = video.width, video.height
     cam = BroadcastCamera(img_w=W, img_h=H)
     start = max(0, int((pause_sec - window_sec) * video.fps))
@@ -71,6 +77,20 @@ def build_realvideo_clip(video, detector, calibration: Calibration,
             dets = list(ex.map(lambda t: detector.detect(t[1], t[0]), frames))
     else:
         dets = [detector.detect(rgb, i) for i, rgb, _ in frames]
+
+    # Drop referee-looking players, and seed the ball on the first frame.
+    for (i, rgb, _), fd in zip(frames, dets):
+        kept = []
+        for d in fd.detections:
+            if d.cls == "player" and exclude_refs and looks_like_ref(rgb, d.bbox):
+                continue                                   # referee -> drop
+            if d.cls == "ball" and i == 0 and ball_seed is not None:
+                continue                                   # replaced by the seed below
+            kept.append(d)
+        if i == 0 and ball_seed is not None:
+            bx, by = float(ball_seed[0]), float(ball_seed[1])
+            kept.append(Detection("ball", (bx - 8, by - 8, bx + 8, by + 8), 1.0))
+        fd.detections = kept
 
     clip = BroadcastClip()
     tracker: HomographyTracker | None = None

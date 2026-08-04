@@ -85,6 +85,34 @@ class VideoSource:
         self.cap.release()
 
 
+def looks_like_ref(rgb: np.ndarray, bbox) -> bool:
+    """True if a person's torso looks like a referee's uniform.
+
+    Two ref styles, both ~grayscale (low colour saturation): NBA refs wear solid
+    *gray* (uniform mid-brightness — distinct from a white jersey, which is bright,
+    or black, which is dark); other leagues wear black-and-white *stripes* (bimodal
+    brightness). Coloured team jerseys have high saturation and are excluded.
+    """
+    import cv2
+    x1, y1, x2, y2 = [int(v) for v in bbox]
+    h, w = y2 - y1, x2 - x1
+    if h < 30 or w < 12:
+        return False
+    crop = rgb[max(0, y1 + int(0.15 * h)):y1 + int(0.5 * h),
+               max(0, x1 + int(0.25 * w)):x1 + int(0.75 * w)]
+    if crop.size == 0:
+        return False
+    hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
+    sat = float(hsv[..., 1].mean())
+    val = hsv[..., 2].astype(float)
+    if sat >= 50:                                        # coloured jersey -> a player
+        return False
+    mean_v, std_v = float(val.mean()), float(val.std())
+    gray = 70 < mean_v < 165 and std_v < 45              # uniform mid-gray (NBA)
+    striped = (val < 70).mean() > 0.18 and (val > 165).mean() > 0.18  # black+white
+    return gray or striped
+
+
 def torso_embedding(rgb: np.ndarray, bbox) -> np.ndarray:
     """A cheap appearance embedding: colour histogram of the torso crop.
 

@@ -54,19 +54,22 @@ class Calibration:
     img_size: tuple = (0, 0)           # (width, height)
     reproj_error_ft: float = 0.0
     time: float | None = None          # video time (s) it was clicked; anchors its camera shot
+    ball_px: tuple | None = None       # user-clicked ball pixel at the calib frame (tracker seed)
 
     def save(self, path):
         Path(path).write_text(json.dumps({
             "H": self.H.tolist(), "points": {k: list(v) for k, v in self.points.items()},
             "img_size": list(self.img_size), "reproj_error_ft": self.reproj_error_ft,
-            "time": self.time,
+            "time": self.time, "ball_px": list(self.ball_px) if self.ball_px else None,
         }, indent=2), encoding="utf-8")
 
     @staticmethod
     def load(path):
         d = json.loads(Path(path).read_text(encoding="utf-8"))
+        bp = d.get("ball_px")
         return Calibration(np.array(d["H"]), {k: tuple(v) for k, v in d["points"].items()},
-                           tuple(d["img_size"]), d.get("reproj_error_ft", 0.0), d.get("time"))
+                           tuple(d["img_size"]), d.get("reproj_error_ft", 0.0), d.get("time"),
+                           tuple(bp) if bp else None)
 
 
 def solve_calibration(clicks: dict, img_size=(0, 0)) -> Calibration | None:
@@ -216,10 +219,39 @@ def interactive_calibrate(frame_rgb: np.ndarray, out_path=None, time=None) -> Ca
         calib.time = time
         print(f"Solved: {len(calib.points)} points, reproj {calib.reproj_error_ft:.2f} ft")
         if _verify_and_confirm(frame_rgb, calib):
+            calib.ball_px = _click_ball(frame_rgb)   # seed the ball tracker
+            if calib.ball_px:
+                print(f"Ball seeded at {tuple(round(v) for v in calib.ball_px)}")
             if out_path:
                 calib.save(out_path); print(f"Saved -> {out_path}")
             return calib
         print("Rejected — redoing this shot.")      # loop again
+
+
+def _click_ball(frame_rgb):
+    """Ask the user to click the ball on the frame (seeds tracking). None to skip."""
+    _use_interactive_backend()
+    import matplotlib.pyplot as plt
+    h, w = frame_rgb.shape[:2]
+    res = {"pt": None}
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.imshow(frame_rgb); ax.set_xlim(0, w); ax.set_ylim(h, 0); ax.axis("off")
+    ax.set_title("Click the BALL to seed tracking  (right-click / Enter = skip)")
+
+    def on_click(event):
+        if event.inaxes is ax and event.button == 1 and event.xdata is not None:
+            res["pt"] = (float(event.xdata), float(event.ydata)); plt.close(fig)
+        elif event.button == 3:
+            plt.close(fig)
+
+    def on_key(event):
+        if event.key in ("enter", "return", "escape"):
+            plt.close(fig)
+
+    fig.canvas.mpl_connect("button_press_event", on_click)
+    fig.canvas.mpl_connect("key_press_event", on_key)
+    plt.show()
+    return res["pt"]
 
 
 def _verify_and_confirm(frame_rgb, calib: Calibration) -> bool:
