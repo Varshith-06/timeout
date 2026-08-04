@@ -38,8 +38,14 @@ def looks_like_placeholder(video, detector=None) -> bool:
 
 
 def build_realvideo_clip(video, detector, calibration: Calibration,
-                         pause_sec: float, window_sec: float, stride: int) -> BroadcastClip:
-    """Build a BroadcastClip from the ``window_sec`` of video before ``pause_sec``."""
+                         pause_sec: float, window_sec: float, stride: int,
+                         detect_workers: int = 1) -> BroadcastClip:
+    """Build a BroadcastClip from the ``window_sec`` of video before ``pause_sec``.
+
+    ``detect_workers`` > 1 runs the (independent) per-frame detections concurrently
+    — a big win for a network detector (Roboflow) where each call is I/O-bound.
+    Tracking stays sequential (it depends on the previous frame).
+    """
     import cv2
     W, H = video.width, video.height
     cam = BroadcastCamera(img_w=W, img_h=H)
@@ -49,15 +55,27 @@ def build_realvideo_clip(video, detector, calibration: Calibration,
     names = list(calibration.points.keys())
     court_pts = np.array([_LANDMARK_COURT[n] for n in names], dtype=float)
 
-    clip = BroadcastClip()
-    tracker: HomographyTracker | None = None
-    cutdet = CutDetector(threshold=0.5)
+    # Read the frames (sequential disk decode), then detect (optionally parallel).
+    frames = []                                    # (idx, rgb, gray)
     idx = 0
     for f in range(start, end + 1, stride):
         rgb = video.frame_at_index(f)
         if rgb is None:
             continue
-        gray = video.gray(rgb)
+        frames.append((idx, rgb, video.gray(rgb)))
+        idx += 1
+
+    if detect_workers > 1 and len(frames) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=detect_workers) as ex:
+            dets = list(ex.map(lambda t: detector.detect(t[1], t[0]), frames))
+    else:
+        dets = [detector.detect(rgb, i) for i, rgb, _ in frames]
+
+    clip = BroadcastClip()
+    tracker: HomographyTracker | None = None
+    cutdet = CutDetector(threshold=0.5)
+    for (i, rgb, gray), det in zip(frames, dets):
         if tracker is None:
             tracker = HomographyTracker(gray, calibration)
             kp = np.array([calibration.points[n] for n in names], dtype=float)
@@ -70,9 +88,8 @@ def build_realvideo_clip(video, detector, calibration: Calibration,
             tracker = HomographyTracker(gray, calibration)
 
         clip.frames.append(BroadcastFrame(
-            frame_idx=idx, camera=cam, detections=detector.detect(rgb, idx),
+            frame_idx=i, camera=cam, detections=det,
             kp_pixels=kp.copy(), kp_court=court_pts.copy(), kp_conf=np.ones(len(names)),
             clock_read=None, cut=cut, image=rgb,
         ))
-        idx += 1
     return clip

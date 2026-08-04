@@ -56,6 +56,8 @@ def main(argv=None) -> int:
     ap.add_argument("--detector", choices=["yolo", "roboflow"], default="yolo")
     ap.add_argument("--rf-workspace", default="varshith-ublcu")
     ap.add_argument("--rf-workflow", default="general-segmentation-api")
+    ap.add_argument("--detect-workers", type=int, default=1,
+                    help="parallel detection threads (use ~12 for the network roboflow detector)")
     args = ap.parse_args(argv)
 
     from src.app.webexport import build_overlay_spec
@@ -111,7 +113,8 @@ def main(argv=None) -> int:
     def process_shot(calib, start_sec, end_bound):
         """Detect+track one camera shot from its calibration, export its pauses."""
         clip = build_realvideo_clip(vid, detector, calib, pause_sec=end_bound,
-                                    window_sec=end_bound - start_sec, stride=args.stride)
+                                    window_sec=end_bound - start_sec, stride=args.stride,
+                                    detect_workers=args.detect_workers)
         # The homography is valid only within this shot — truncate at the first cut.
         cut_idx = next((i for i, f in enumerate(clip.frames) if i > 0 and f.cut), None)
         shot_end = end_bound
