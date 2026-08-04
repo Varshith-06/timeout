@@ -39,7 +39,25 @@ import socketserver  # noqa: E402
 WORK = ROOT / "out" / "studio"
 WORK.mkdir(parents=True, exist_ok=True)
 STATE = {"video": None, "meta": None, "loading": False, "load_error": None,
-         "shots": [], "building": False, "built": False, "log": ""}
+         "shots": [], "building": False, "built": False, "log": "", "proc": None}
+
+
+def _reload_state():
+    """Recover an in-progress session on restart: existing clip + calibrated shots."""
+    from src.perception.calibrate import Calibration
+    clip = WORK / "clip.mp4"
+    if clip.exists():
+        try:
+            STATE["meta"] = _video_meta(clip); STATE["video"] = str(clip)
+        except Exception:
+            pass
+    for f in sorted(WORK.glob("shot*.json")):
+        try:
+            c = Calibration.load(f)
+            STATE["shots"].append({"file": str(f), "time": c.time, "reproj": c.reproj_error_ft})
+        except Exception:
+            pass
+    STATE["built"] = (WORK / "recommendations.json").exists()
 
 
 def _json(handler, obj, code=200):
@@ -192,23 +210,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return _json(self, {"ok": True, "reproj": round(calib.reproj_error_ft, 2), "n_shots": i})
 
     def _build(self, body):
-        if STATE["building"] or not STATE["shots"]:
-            return _json(self, {"ok": False, "error": "no shots or already building"}, 400)
-        shots = [s["file"] for s in STATE["shots"]]
+        if not STATE["shots"]:
+            return _json(self, {"ok": False, "error": "calibrate a shot first"}, 200)
+        old = STATE.get("proc")                          # supersede a running build
+        if old is not None and old.poll() is None:
+            try:
+                old.terminate()
+            except Exception:
+                pass
+        shots = [s["file"] for s in STATE["shots"]]      # always ALL current shots
         det = body.get("detector", "yolo")
         cmd = [sys.executable, str(ROOT / "scripts/build_webapp.py"), "--video", str(STATE["video"]),
                "--shots", *shots, "--detector", det, "--detect-workers",
                "16" if det == "roboflow" else "1", "--live-ball", "4", "--out", str(WORK)]
+        STATE["building"] = True; STATE["built"] = False
+        STATE["log"] = f"Building {len(shots)} shot(s)…"
 
         def run():
-            STATE["building"] = True; STATE["log"] = "Detecting, tracking, scoring..."
             try:
-                r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
-                STATE["log"] = (r.stdout or "")[-400:] + (r.stderr or "")[-200:]
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        text=True, cwd=str(ROOT))
+                STATE["proc"] = proc
+                out, _ = proc.communicate()
+                STATE["log"] = (out or "")[-500:]
                 STATE["built"] = (WORK / "recommendations.json").exists()
             except Exception as e:
                 STATE["log"] = str(e)
-            STATE["building"] = False
+            STATE["building"] = False; STATE["proc"] = None
 
         threading.Thread(target=run, daemon=True).start()
         return _json(self, {"ok": True})
@@ -247,8 +275,11 @@ def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
     http.server.ThreadingHTTPServer.allow_reuse_address = True
     chat = "Groq" if os.environ.get("GROQ_API_KEY") else ("Claude" if os.environ.get("ANTHROPIC_API_KEY") else "offline")
+    _reload_state()
     with http.server.ThreadingHTTPServer(("", port), Handler) as httpd:
-        print(f"NBA Play Recommender studio:  http://localhost:{port}\n  assistant: {chat}\nCtrl-C to stop.")
+        print(f"NBA Play Recommender studio:  http://localhost:{port}\n  assistant: {chat}"
+              f"\n  recovered: {len(STATE['shots'])} shot(s), video={'yes' if STATE['video'] else 'no'},"
+              f" built={STATE['built']}\nCtrl-C to stop.")
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

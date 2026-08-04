@@ -200,7 +200,7 @@ async function saveShot(){
   $('shotStatus').textContent=`✓ ${d.n_shots} shot(s) calibrated`;
   $('prompt').innerHTML='<b style="color:#22c55e">✓ Calibrated!</b> Add another shot, or click <b>Build the app ▶</b> →';
   $('doneBtn').style.display='none';$('skipBtn').style.display='none';$('undoBtn').style.display='none';
-  $('addShotBtn').style.display=''; $('buildBtn').style.display='';
+  $('addShotBtn').style.display=''; $('buildBtn').style.display=''; $('buildBtn').disabled=false;
 }
 $('addShotBtn').onclick=()=>{ const next=shotIdx+1;
   if(next>=shotTimes.length){ shotTimes.push(Math.min(META.duration-1, shotTimes[shotIdx]+20)); }
@@ -215,12 +215,16 @@ $('buildBtn').onclick=async ()=>{
     body:JSON.stringify({detector:$('detector').value})});
   poll();
 };
+let polling=false;
 async function poll(){
-  const s=await (await fetch('/api/status')).json();
-  if(s.built){ $('buildMsg').textContent='Ready — pause the video to see the best play.';
-    const f=$('player'); f.src='/player'; f.style.display=''; return; }
-  if(!s.building && s.log){ $('buildMsg').textContent='Build finished but produced no recommendations. '+s.log; return; }
-  setTimeout(poll,2500);
+  if(polling) return; polling=true;
+  try{
+    const s=await (await fetch('/api/status')).json();
+    if(s.built){ $('buildMsg').textContent='Ready — pause the video to see the best play.';
+      const f=$('player'); f.src='/player?t='+Date.now(); f.style.display=''; polling=false; return; }
+    if(!s.building && s.log){ $('buildMsg').textContent='Build finished but produced no recommendations. '+s.log; polling=false; return; }
+  }catch(e){}
+  polling=false; setTimeout(poll,2500);
 }
 </script>
 </body>
