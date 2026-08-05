@@ -159,14 +159,30 @@ V.addEventListener('seeked', () => { if (V.paused) refresh(); });
 const SNAP_WINDOW = 2.0;   // seconds
 function nearestRec(t) {
   if (!RECS.length) return null;
-  let bestShown = null, bsd = Infinity, best = RECS[0], bd = Infinity;
+  let bestShown = null, bsd = Infinity, best = null, bd = Infinity;
   for (const r of RECS) {
     const d = Math.abs(r.video_time - t);
     if (d < bd) { bd = d; best = r; }
     if (r.actions && d < bsd) { bsd = d; bestShown = r; }
   }
+  // Each overlay's pixel geometry (handler, arrows, targets) is baked for its OWN
+  // frame, so it is only valid NEAR that time. Snap to a nearby clear frame, but
+  // NEVER draw a recommendation whose nearest match is outside the snap window —
+  // e.g. pausing before the calibrated segment would otherwise stamp one frozen
+  // play's arrows onto a completely different camera view (into the stands).
   if (bestShown && bsd <= SNAP_WINDOW) return bestShown;
-  return best;
+  if (best && bd <= SNAP_WINDOW) return best;   // nearby but gated -> withhold msg
+  return null;                                   // no coverage at this timestamp
+}
+function coverageMsg(t) {
+  if (!TIMES.length) return 'No recommendations were built for this clip.';
+  const lo = TIMES[0], hi = TIMES[TIMES.length - 1];
+  if (t < lo - SNAP_WINDOW) return 'Before the calibrated segment (coverage starts at '
+    + lo.toFixed(1) + 's). Calibrate an earlier camera shot to cover this.';
+  if (t > hi + SNAP_WINDOW) return 'After the calibrated segment (coverage ends at '
+    + hi.toFixed(1) + 's) — the camera cut away. Calibrate the next shot to continue.';
+  return 'No clear recommendation here — low tracking confidence (replay, close-up, '
+    + 'or occlusion). The system withholds rather than guess.';
 }
 function refresh() {
   curRec = nearestRec(V.currentTime);
@@ -181,8 +197,7 @@ function renderPanels() {
   const wh = document.getElementById('why');
   cl.innerHTML = '';
   if (!curRec || !curRec.actions) {
-    rb.innerHTML = '<span class="gate-msg">No clear recommendation here — low tracking confidence '
-      + '(replay, close-up, or occlusion). The system withholds rather than guess.</span>';
+    rb.innerHTML = '<span class="gate-msg">' + coverageMsg(V.currentTime) + '</span>';
     wh.innerHTML = '<span class="gate-msg">—</span>';
     return;
   }
