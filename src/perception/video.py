@@ -227,7 +227,7 @@ class RoboflowWorkflowDetector(Detector):
 
     workspace: str
     workflow_id: str
-    classes: str = "ball, basket, person"
+    classes: str = "player, referee, basketball"     # 'player' excludes the crowd
     api_url: str = "https://serverless.roboflow.com"
     api_key: str = field(default_factory=lambda: os.environ.get("ROBOFLOW_API_KEY", ""))
     conf: float = 0.2
@@ -249,7 +249,7 @@ class RoboflowWorkflowDetector(Detector):
         r.raise_for_status()
         dets = []
         for p in _roboflow_predictions(r.json()):
-            ours = _match_class(p.get("class", ""))
+            ours = _match_class(p.get("class", "").strip())   # classes may have leading spaces
             if ours is None:
                 continue
             c = float(p.get("confidence", 0.0))

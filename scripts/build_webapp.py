@@ -55,7 +55,8 @@ def main(argv=None) -> int:
                     help="roster.json (jersey -> team/name/stats): fixes team labels, names players")
     ap.add_argument("--detector", choices=["yolo", "roboflow"], default="yolo")
     ap.add_argument("--rf-workspace", default="varshith-ublcu")
-    ap.add_argument("--rf-workflow", default="general-segmentation-api")
+    ap.add_argument("--rf-workflow", default="general-segmentation-api-2")  # players-only, excludes crowd
+    ap.add_argument("--rf-classes", default="player, referee, basketball")
     ap.add_argument("--detect-workers", type=int, default=1,
                     help="parallel detection threads (use ~12 for the network roboflow detector)")
     args = ap.parse_args(argv)
@@ -81,7 +82,8 @@ def main(argv=None) -> int:
     print(f"video: {vid.width}x{vid.height}, {vid.fps:.0f} fps, {duration:.1f}s")
 
     if args.detector == "roboflow":
-        detector = RoboflowWorkflowDetector(workspace=args.rf_workspace, workflow_id=args.rf_workflow)
+        detector = RoboflowWorkflowDetector(workspace=args.rf_workspace, workflow_id=args.rf_workflow,
+                                            classes=args.rf_classes)
     else:
         detector = PretrainedYOLODetector()
         print(f"detector: local YOLO ({detector.weights})")
