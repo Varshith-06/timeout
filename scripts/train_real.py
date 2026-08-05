@@ -42,7 +42,7 @@ def _concat(chunks, key):
     return np.concatenate(parts) if parts else np.zeros((0,))
 
 
-def train_from_cache(cache_dir: str) -> int:
+def train_from_cache(cache_dir: str, value_epochs: int = 40) -> int:
     """Train from disk chunks built by build_real_cache.py (memory-safe path)."""
     import glob as _glob
     from src.ingest.sportvu import BALL_PLAYER_ID  # noqa: F401
@@ -91,7 +91,7 @@ def train_from_cache(cache_dir: str) -> int:
     tr_v, te_v = varr(tr_c), varr(te_c)
     print(f"  V-states {len(tr_v['y'])}/{len(te_v['y'])}  PPP {tr_v['y'].mean():.2f}")
 
-    vm, hist = train_value_model(None, vocab, augment=True, epochs=40, verbose=True,
+    vm, hist = train_value_model(None, vocab, augment=True, epochs=value_epochs, verbose=True,
                                  seed=1, weight_decay=2e-3, early_stop=True,
                                  arrays=tr_v, val_arrays=te_v)
     vm.save(models / "value.pt")
@@ -102,7 +102,11 @@ def train_from_cache(cache_dir: str) -> int:
 
 
 def _report(sm, tr, te, vm, tr_v, te_v, out, EV):
+    """Print the held-out metrics AND persist them to out/real/real_full_metrics.json
+    (the same schema the JSON-path run writes), so downstream benchmark/report tools
+    read numbers that match the freshly-trained models."""
     named = {}
+    metrics = {"brier": {}}
     print("\n=== Real value stack (held-out) ===")
     for name, X, y, base_y, pred in [
         ("shot", te.shot_X, te.shot_y, tr.shot_y,
@@ -113,13 +117,21 @@ def _report(sm, tr, te, vm, tr_v, te_v, out, EV):
         if pred is None or len(y) == 0:
             continue
         b = _brier(pred, y); bb = _brier(np.full_like(pred, base_y.mean()), y)
+        metrics["brier"][name] = {"model": float(b), "baseline": float(bb)}
         print(f"  {name:<6} Brier {b:.3f} (base {bb:.3f})")
         named[f"{name} (real)"] = (pred, y)
     EV.plot_reliability(named, out / "real_submodels_reliability.png")
     vpred = vm.net_predict(te_v) if hasattr(vm, "net_predict") else _vpred(vm, te_v)
     ybar = tr_v["y"].mean()
-    print(f"  V(s)   MSE {_brier(vpred, te_v['y']):.3f} (base {_brier(np.full_like(vpred, ybar), te_v['y']):.3f})"
-          f"  corr {np.corrcoef(vpred, te_v['y'])[0,1]:.3f}  PPP {te_v['y'].mean():.2f}")
+    metrics["value"] = {
+        "mse": float(_brier(vpred, te_v["y"])), "mse_baseline": float(_brier(np.full_like(vpred, ybar), te_v["y"])),
+        "corr": float(np.corrcoef(vpred, te_v["y"])[0, 1]),
+        "ppp_train": float(ybar), "ppp_test": float(te_v["y"].mean()),
+    }
+    print(f"  V(s)   MSE {metrics['value']['mse']:.3f} (base {metrics['value']['mse_baseline']:.3f})"
+          f"  corr {metrics['value']['corr']:.3f}  PPP {metrics['value']['ppp_test']:.2f}")
+    (out / "real_full_metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    print(f"  metrics -> {out / 'real_full_metrics.json'}")
 
 
 def _vpred(vm, arrays):
@@ -136,9 +148,11 @@ def main() -> int:
                     help="Cap games used (build time + memory scale with this)")
     ap.add_argument("--from-cache", type=str, default=None,
                     help="Train from chunk_*.npz built by build_real_cache.py")
+    ap.add_argument("--value-epochs", type=int, default=40,
+                    help="V(s) training epochs (it plateaus early on real data; lower = faster)")
     args = ap.parse_args()
     if args.from_cache:
-        return train_from_cache(args.from_cache)
+        return train_from_cache(args.from_cache, value_epochs=args.value_epochs)
 
     out = Path("out/real"); out.mkdir(parents=True, exist_ok=True)
     models = Path("models/real"); models.mkdir(parents=True, exist_ok=True)

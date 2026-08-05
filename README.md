@@ -1,26 +1,59 @@
-# NBA Play Recommender
+# Timeout — NBA Play Recommender
 
-Pause an NBA game at any moment and get a ranked set of actions the offense could
-take, each scored in **expected points**, drawn on the frame as arrows and
-highlights, with a one-paragraph rationale. It's not a play *predictor* (what will
-happen) — it's an action *evaluator* (what's worth the most), a second opinion
-with a number attached.
+Pause an NBA game at any moment and Timeout draws the **best thing the offense could
+do next** on the frame — an arrow, a highlighted player, and a number in **expected
+points** — then explains why in a sentence. It's not a play *predictor* (what will
+happen); it's an action *evaluator* (what's worth the most): a second opinion with a
+number attached.
+
+> **A complete, plain-language walkthrough of the whole project is in
+> [`timeout.pdf`](timeout.pdf)** — read that if you want to understand it from scratch.
 
 Given a paused frame it produces:
 
 1. a **court-space state** — all ten players and the ball in feet, with velocities;
-2. a **ranked candidate action list** for the ball handler, each with an expected-points estimate;
-3. an **overlay** drawing the top action (runner-up on toggle); and
-4. a **plain-English rationale**, generated under a strict schema.
+2. a **ranked candidate action list** for the ball handler, each scored in expected points;
+3. an **overlay** drawing the top action (alternatives on click); and
+4. a **plain-English rationale**, generated under a strict schema (no invented numbers).
 
-Everything runs today on synthetic data with **no downloads and no GPU**; drop in
-real 2015-16 SportVU logs and broadcast footage and the same code path runs
-unchanged. On real data the shot and drive models beat their baselines and the
-rest match them (see [Results](#results)).
+The reasoning core is trained and validated on real NBA data; the front-end runs on
+real broadcast video through a purpose-built basketball detector and a one-time court
+calibration. **83 tests pass** end to end.
 
-> The included [`nba-play-recommender-roadmap.md`](nba-play-recommender-roadmap.md)
-> is the original build spec, kept for reference. This README describes the system
-> as built.
+---
+
+## The web app — watch, pause, ask, adjust
+
+The product is a local single-page app: **play the footage, pause anywhere, and the
+best play is drawn on the frame**; ask **why**; **adjust** the shown play from a ranked
+list or by chatting with an assistant. There are two parts.
+
+**The studio (setup wizard).** Upload a clip from your device or paste a YouTube link.
+It fetches the footage, opens a court-calibration step (click the highlighted
+landmarks; you can also click where the ball is to seed tracking), then builds the
+recommendations. Calibrate several camera angles to cover more of the game.
+
+```bash
+python scripts/studio.py           # open the printed URL, then upload/paste a clip
+```
+
+**The player.** Pause and the top action is drawn with an arrow, a highlighted player,
+and its EPV. A ranked list of alternatives sits beside the video (click any to draw it).
+Ask **why** for a one-paragraph rationale. A **chat assistant** answers free-form
+questions ("why not shoot?", "show the drive", "pass to #7") and can change the drawn
+play — it runs through **Groq or Claude** when a key is set and falls back to built-in
+rules otherwise. The app does **no live inference**: all work is pre-computed and cached,
+so pausing is instant. Each overlay is computed for its own frame, so the app never
+reuses a recommendation on a far-away moment — outside a calibrated segment it shows an
+honest "no coverage here" note instead of a stale arrow.
+
+If you already have a clip + calibration, you can build and serve directly:
+
+```bash
+python scripts/calibrate.py   --video clip.mp4 --time 39 --out calib.json
+python scripts/build_webapp.py --video clip.mp4 --shots calib.json --detector roboflow
+python scripts/serve_webapp.py            # http://localhost:8000
+```
 
 ---
 
@@ -36,99 +69,81 @@ broadcast video ──(perception)──▶  State  ◀──(parser)── Spor
 ```
 
 The **state schema** is the contract the whole system is built on: a deterministic,
-code-produced object (nothing inferred by an LLM) describing every player and the
-ball, defender pressure, spacing, zones, and a `confidence` field. A SportVU
-possession and a broadcast-CV possession produce a *byte-identical* state, so
-every downstream component runs on either source unchanged.
+code-produced object (nothing inferred by an LLM) describing every player and the ball,
+defender pressure, spacing, zones, and a `confidence` field. A SportVU possession and a
+broadcast-CV possession produce a *byte-identical* state, so every downstream component —
+all trained on clean official data — runs on messy video unchanged.
 
 | Component | Modules | What it does |
 |---|---|---|
 | **Court + state** | `src/state/` | NBA court geometry (one source of truth for coordinates), possession segmentation, and the deterministic state schema + conformance validator |
-| **Ingest** | `src/ingest/` | Parses real SportVU JSON, segments possessions with ball-handler smoothing, generates schema-valid synthetic tracking, and loads real shot / play-by-play labels |
-| **Value model** | `src/value/` | Enumerates ≤13 legal candidate actions and scores each with `Q(s,a) = P(success)·V(s') + (1−P)·V_turnover`. LightGBM shot/pass/drive sub-models (empirical-Bayes per-player shot prior) + a permutation-invariant deep-set **V(s)** in PyTorch, GPU-trained with noise augmentation |
-| **Perception** | `src/perception/` | Turns a broadcast into the same state: `cv2` homography (reprojection-gated, temporally smoothed), tracking with camera-cut resets, KMeans team clustering, jersey identity, temporally-validated shot clock, composite confidence + gating |
-| **Rationale** | `src/llm/` | A strict `Rationale` schema (no coordinates, player-ids never leaked, every number echoed from the value model) generated by Claude (`claude-opus-4-8`) or a deterministic offline template, with validate-and-regenerate |
-| **App** | `src/app/` | Pause-to-overlay: score + gate, cache by `(game, timestamp)`, sub-2-second budget, "why not X?", rationale as a second click |
+| **Ingest** | `src/ingest/` | Parses real SportVU JSON, segments possessions with ball-handler smoothing, generates schema-valid synthetic tracking, loads real shot / play-by-play labels |
+| **Value model** | `src/value/` | Enumerates ≤13 legal candidate actions and scores each with `Q(s,a) = P(success)·V(s') + (1−P)·V_turnover`. LightGBM shot/pass/drive sub-models + a permutation-invariant deep-set **V(s)** in PyTorch (GPU) |
+| **Perception** | `src/perception/` | Turns a broadcast into the same state: `cv2` homography (reprojection-gated, optical-flow propagated), tracking with camera-cut resets, KMeans team clustering, jersey OCR, temporally-validated shot clock, composite confidence + gating |
+| **Rationale** | `src/llm/` | A strict `Rationale` schema (no coordinates, player-ids never leaked, every number echoed from the value model) via Claude (`claude-opus-4-8`) or a deterministic offline template, validate-and-regenerate |
+| **App** | `src/app/` | Pause-to-overlay: score + gate, cache, "why not X?", chat assistant (Groq/Claude), the studio wizard + web player |
 | **Render** | `src/render/` | Top-down court renderer and the video overlay that projects court→pixel to draw on the frame |
 
-Two design rules keep it honest: **actions are structured objects, never
-coordinates** — the renderer is the only thing that turns an action into geometry,
-and every endpoint comes from a tracked position; and the perception path **never
-imputes a missing defender** — it drops `confidence` and, below a threshold,
-withholds the recommendation entirely.
+Two design rules keep it honest: **actions are structured objects, never coordinates**
+— the renderer is the only thing that turns an action into geometry, and every endpoint
+comes from a tracked position; and the perception path **never imputes a missing
+defender** — it drops `confidence` and, below a threshold, withholds the recommendation
+entirely.
 
 ---
 
-## Results
+## Benchmark
 
-### Recommendation quality (simulated possessions)
+Run the whole thing yourself: **`python scripts/benchmark.py`** (writes
+`out/benchmark/benchmark.json`), and the figures with `python scripts/benchmark_charts.py`.
+Numbers below are that script's output; the charts also feed `timeout.pdf`.
 
-Scored against a ground-truth generative model, each recommendation is graded by
-its regret in expected points versus the best available action, and compared to
-naive baselines (always-shoot, pass-to-most-open, random):
+### Scoring quality on real 2015-16 data
 
-| Metric | Result |
-|---|---|
-| Right-or-defensible | **86%** |
-| Wrong | **4%** |
-| Mean regret vs best baseline | **0.058 vs 0.274** (≈5× better) |
-| Shot / pass / drive Brier (simulated) | 0.226 / 0.103 / 0.197 — all beat base rate |
+Trained on **~240 games** of SportVU tracking joined to real shot + play-by-play labels
+(≈25k shots, 45k passes, 49k drives, 627k possession states), **split by game** (held-out
+games, never frames). The possession parser recovers NBA-real rates (**≈1.05
+points/possession**).
 
-### Value model on real 2015-16 data
-
-Trained on **~97 real games** (~11k shots, ~300k possession states) of SportVU
-tracking joined to real shot + play-by-play labels, split by *game* (held-out
-games, never frames). The play-by-play possession parser recovers NBA-real rates
-(**≈190 possessions/game, ≈1.0 points/possession**):
-
-| Model | Real Brier | Baseline | |
+| Sub-model | Real Brier | Baseline | |
 |---|---|---|---|
-| Shot make | 0.200 | 0.246 | **beats** |
-| Drive success | 0.034 | 0.091 | **beats** |
-| Pass completion | 0.065 | 0.064 | ties — completion is ~90%, hard to beat the base rate |
-| V(s) MSE | 1.634 | 1.634 | ties — weak per-state signal from single-sample returns |
+| Shot make | **0.200** | 0.248 | **beats** |
+| Drive success | **0.035** | 0.090 | **beats** |
+| Pass completion | 0.068 | 0.068 | ties — completion is ~90%, the base rate is hard to beat |
+| V(s) MSE | 1.468 | 1.468 | ties — weak per-state signal from single-sample returns (corr 0.02) |
 
-The shot model improved with more data (Brier 0.214 → 0.200) and is well-calibrated
-at mid-range and three (reliability diagram in `out/real/`). Pass completion is
-the roadmap's "hardest sub-model"; V(s) needs TD(λ) smoothing and more than these
-games to beat the possession-mean baseline (its correlation with realized points
-did rise with data).
+The shot and drive sub-models clearly beat their base rates; V(s) is the honest weak
+point (it needs TD(λ) smoothing and more data). The action *ranking* still works because
+it leans mostly on the three strong sub-models. Reliability diagrams are in `out/real/`.
 
-Because many games in one process leak memory through polars' Arrow arena, the
-real dataset is built in **memory-safe chunks** (each a fresh process) and cached
-to disk, then trained from the cache:
+### Recommendation quality (simulated possessions, vs. naive strategies)
 
-```bash
-python scripts/fetch_real_data.py 100                        # download games + labels
-for s in 0 12 24 36 48 60 72 84 96; do \
-  python scripts/build_real_cache.py --start $s --count 12; done   # build chunks
-python scripts/train_real.py --from-cache data/cache         # train the full stack
-```
+Scored against a ground-truth generative model, each pick is graded by its regret in
+expected points versus the best available action:
 
-For a quick run on a few games without the cache, `python scripts/train_real.py
---max-games 15` builds and trains in one process.
+| Strategy | Right-or-defensible | Wrong | Mean regret |
+|---|---|---|---|
+| **Timeout** | **86%** | **4%** | **0.058** |
+| Always pass to most open | 40% | 48% | 0.274 |
+| Always shoot | 30% | 55% | 0.337 |
+| Random | 20% | 55% | 0.352 |
 
-### Perception (synthetic broadcast, paired vs ground truth)
+Timeout loses ≈5× fewer expected points than the best simple rule.
 
-| Metric | Result | Target |
-|---|---|---|
-| Homography median reprojection error | ~0.1–0.2 ft | < 1.5 ft |
-| Recovered player position error (median) | **0.66 ft** | < 1.5 ft |
-| Team-assignment accuracy | **1.00** | > 0.97 |
-| Jersey identity accuracy | **1.00** | > 0.90 |
-| Shot-clock accuracy (after temporal validation) | ~0.97 | > 0.99 |
+### On real footage (the Heat/Nets test clip, 130 s)
 
-The measured position/identity/miss error feeds straight back into the value
-model's noise augmentation (`perception/augment_feedback.py`), so V(s) can be
-retrained matched to the real perception noise.
+| What was measured | Result |
+|---|---|
+| Pause points with a recommendation | **111 / 146 (76%)**, spanning three calibrated shots |
+| On-court players detected per pause | **median 10** (range 7–13) — the five-on-five action, not the crowd |
+| Pauses with a live ball detection | **90%** (the rest coast on the velocity tracker) |
+| Pauses with a resolved handler / located rim | **100% / 100%** |
+| Court calibration reprojection error | **0.14–1.3 ft** (target < 1.5 ft) |
+| Per-pause scoring latency | **~38 ms** median (13 candidates; 2 s budget) |
 
-### App
-
-Pause-to-overlay in **~50 ms** (budget: 2 s); re-watching the same moment is a
-0 ms cache hit. The rationale is a second click — the overlay renders instantly
-from the value model; the LLM is called only on demand.
-
-**79 tests pass** end to end (`python -m pytest -q`).
+A median of exactly 10 players is the headline of the detector work: the purpose-built
+basketball detector's `player` class excludes the crowd/bench, where a generic "person"
+detector boxed 30–40.
 
 ---
 
@@ -136,162 +151,118 @@ from the value model; the LLM is called only on demand.
 
 ```bash
 pip install -e .        # core: numpy, polars, pyarrow, matplotlib, torch, lightgbm, scikit-learn, opencv
-python -m pytest -q     # 79 tests, no data or GPU required
+python -m pytest -q     # 83 tests, no data or GPU required
 ```
 
 Everything below runs on synthetic data with no downloads:
 
 ```bash
-python scripts/demo_phase1.py --seed 3          # state + candidate actions + court render
+python scripts/demo_phase1.py --seed 3               # state + candidate actions + court render
 python scripts/train_phase2.py --possessions 10000   # train the value model (GPU if available)
-python scripts/demo_phase2.py  --seed 5          # EPV-scored overlays
-python scripts/demo_phase3.py  --seed 5          # broadcast → state → EPV → overlay + domain gap
-python scripts/demo_phase4.py  --seed 5          # conformance + app + rationale (offline)
-python scripts/demo_phase4.py  --seed 5 --use-claude   # live Claude rationale (needs API creds)
+python scripts/demo_phase2.py  --seed 5              # EPV-scored overlays
+python scripts/demo_phase3.py  --seed 5              # broadcast → state → EPV → overlay + domain gap
+python scripts/demo_phase4.py  --seed 5              # conformance + app + rationale (offline)
+python scripts/demo_phase4.py  --seed 5 --use-claude # live Claude rationale (needs API creds)
 ```
 
 Train on real data (games + weights are gitignored):
 
 ```bash
-python scripts/fetch_real_data.py 100    # download games + shot/play-by-play labels
-python scripts/train_real.py             # full value stack on real data + real metrics
+python scripts/fetch_real_data.py 240                # download games + shot/play-by-play labels
+for s in $(seq 0 12 240); do \
+  python scripts/build_real_cache.py --start $s --count 12; done   # memory-safe chunks
+python scripts/train_real.py --from-cache data/cache # train the full stack + write metrics
 ```
 
-For GPU training, install a CUDA build of torch, e.g.
-`pip install torch --index-url https://download.pytorch.org/whl/cu126`.
+For a quick run, `python scripts/train_real.py --max-games 15`. For GPU training install a
+CUDA build of torch, e.g. `pip install torch --index-url https://download.pytorch.org/whl/cu126`.
+The real dataset is built in **memory-safe chunks** (each a fresh process) because many
+games in one process leak memory through polars' Arrow arena.
 
-### Running on real broadcast video
+---
 
-The real-video path uses **pretrained** models (no annotation/training): a COCO
-YOLO detector (person→player, ball) and a **manual court calibration** in place of
-the (untrained) court-keypoint model.
+## Running on real broadcast video
+
+The real-video path uses **pretrained** models (no annotation/training): a basketball
+detector plus a **one-time manual court calibration** in place of the (untrained)
+court-keypoint model.
 
 ```bash
 pip install -e ".[realvideo]"                              # nba_api + yt-dlp + ultralytics
-# get footage: labeled NBA-API clips (US networks) OR any YouTube possession (anywhere)
-python fetch_nba_clips.py                                   # labeled event clips (see note)
 python scripts/fetch_youtube.py "https://youtu.be/..." --start 1:05 --end 1:20
 python scripts/calibrate.py --video clip.mp4 --time 2.0 --out calib.json
-python scripts/demo_realvideo.py --video clip.mp4 --calib calib.json --pause 6.0
+python scripts/build_webapp.py --video clip.mp4 --shots calib.json --detector roboflow
+python scripts/serve_webapp.py
 ```
 
-**Calibration** is a one-time, ~45-second click step per camera shot: a court
-diagram highlights a landmark, you click the matching spot in the frame (6–8
-well-spread line intersections), and it shows the projected court lines so you can
-verify the fit. Optical flow then propagates the homography across the shot. This
-is the reliable substitute for a trained keypoint model.
+**Calibration** is a ~45-second click step per camera shot: a court diagram highlights a
+landmark, you click the matching spot (5–8 well-spread line intersections), and it draws
+the projected court lines so you can verify the fit. Event-driven controls let you undo a
+point, skip a landmark, or reject and redo a shot. Optical flow then propagates the
+homography across the shot. This is the reliable substitute for a trained keypoint model.
 
-Then `demo_realvideo.py` runs the exact perception spine + value model validated
-elsewhere: detect → track → calibrated homography → `State` → EPV → overlay drawn
-**on the actual paused frame**. Four robustness steps keep a *pretrained* detector
-honest on messy broadcast pixels (on the Heat/Nets test clip they take the frame
-from 15 "players"/handler-on-the-scoreboard to a clean 10-player state with the
-handler on the ball-carrier, confidence 0.70 → 0.85):
+### Detectors (dropped in by class name — no code change)
 
-- **Roster gate** — a track is kept only if its *median* court position is an
-  interior on-floor player. Crowd/bench/refs project onto the sidelines (loose
-  far-field homography dumps them there); a small sideline inset removes them.
-  Tracklet length and motion don't separate them — seated crowd tracks as stably
-  as a player — but the inset does.
-- **Low-confidence ball detection** (`ball_conf=0.05`) — the small, blurred ball
-  is missed at normal thresholds; detectors rarely false-positive a ball on wood.
-- **Temporal ball tracking** — the ball's pixel path is interpolated across the
-  frames the detector misses, so every pause has a ball and thus a handler.
-- **Handler voting** — possession is mode-filtered over neighbouring frames so the
-  ball-handler can't flicker.
+The detector maps its own class *names* onto the schema, so any detector works:
 
-The detector maps its own class *names* onto the schema, so any detector drops in
-with no code change:
-
-- **Local YOLO** (default) — COCO `yolo11l.pt`, or a fine-tuned basketball model
-  placed at `models/basketball.pt` (auto-detected). A players-only model makes the
-  roster gate a no-op.
-- **Hosted Roboflow workflow** — `--detector roboflow` calls a serverless workflow
-  (the class names `ball, basket, person` map to ball/rim/player). The API key is
-  read from `$ROBOFLOW_API_KEY` and never stored. It gives markedly better *ball*
-  detection (→ reliable handler); being a `person` detector it still needs the
-  roster gate. One network call per frame, so use a larger `--stride`:
+- **Hosted Roboflow workflow** (recommended) — `--detector roboflow` calls a serverless
+  **basketball player-detection** workflow whose `player` class detects the ~10 on-court
+  players and **not the crowd**, with a separate `referee` class (excluded) and reliable
+  `ball` detection. This is what fixed "players/ball not detected properly." The key is
+  read from `$ROBOFLOW_API_KEY` and never stored. One network call per frame, so use a
+  larger `--stride` and `--detect-workers` for concurrency; transient serverless timeouts
+  are retried and a single unreachable frame is skipped rather than crashing the build.
 
   ```bash
   export ROBOFLOW_API_KEY=...   # your key; never committed
-  python scripts/demo_realvideo.py --video clip.mp4 --calib calib.json --pause 39 \
-      --detector roboflow --stride 8
+  python scripts/build_webapp.py --video clip.mp4 --shots calib.json \
+      --detector roboflow --stride 8 --detect-workers 8 --live-ball 4
   ```
 
-On a clean half-court frame it draws the recommendation; on replays/close-ups/
-occluded frames it (correctly) withholds via the confidence gate.
+- **Local YOLO** (default, offline) — COCO `yolo11l.pt`, or a fine-tuned basketball model
+  at `models/basketball.pt` (auto-detected). Runs on GPU when a matching CUDA
+  torch+torchvision is installed.
 
-> **The honest boundary.** The reasoning core is validated (86% on simulated,
-> beats baselines on ~97 real games); the remaining gap is purely the *pretrained*
-> front-end on real pixels. (1) Region lock: the NBA API serves *"VIDEO NOT
-> AVAILABLE"* placeholders to many connections (`demo_realvideo.py` detects and
-> says so) — use `fetch_youtube.py` from anywhere instead. (2) COCO YOLO is coarse
-> for basketball: it detects every *person* (the roster gate removes most, but a
-> coach/ref standing in the interior can still slip through) and only intermittently
-> the fast, blurred ball. The robustness stack above narrows this a lot, but a
-> **fine-tuned basketball detector (players-only + ball) is the production
-> front-end** — drop it at `models/basketball.pt` and it's used automatically, no
-> code change, closing the gap. (3) Automatic *from-scratch* court calibration was
-> attempted and set aside: on broadcast wood the court lines are a mix of light
-> (boundary) and dark (arc, key) strokes with jersey/logo interference, so classical
-> line detection can't correspond them reliably — the trained keypoint model is the
-> real path, and the ~45-second manual click calibration is the reliable stand-in.
+### Robustness on messy broadcast pixels
 
-### The web app — watch, pause, ask, adjust
+Several steps keep the front-end honest, taking a raw frame to a clean 10-player state
+with the handler on the ball-carrier:
 
-A local single-page app turns the clip into the intended product: **play the
-footage, pause anywhere, and the best play is drawn on the frame** (arrows,
-circles, highlight, EPV label); ask **why** and read the rationale; **adjust** the
-displayed play from a ranked candidate list or by chatting with an assistant.
+- **Referee exclusion** — the detector's `referee` class is dropped; a conservative
+  gray-uniform appearance check is a backup (deliberately tuned not to remove real players).
+- **Roster gate** — a track is kept only if its *median* court position is an interior
+  on-floor player, so anything projected onto the sidelines is removed.
+- **Temporal ball tracking** — a constant-velocity motion model coasts the ball's position
+  through the frames the detector misses, so every pause has a ball and thus a handler.
+- **Handler voting** — possession is mode-filtered over neighbouring frames so it can't flicker.
+- **Camera-cut truncation** — each shot's homography is valid only until the first cut, so
+  detection stops there; multi-shot builds anchor a fresh calibration in each shot.
 
-```bash
-# 1) pre-compute recommendations across the possession (one detection pass, cached)
-python scripts/build_webapp.py --video clip.mp4 --calib calib.json --calib-time 39
-# 2) serve it (Range-enabled, so the video scrubs) and open the browser
-python scripts/serve_webapp.py            # http://localhost:8000/index.html
-```
+### Coverage — multiple camera shots
 
-**More coverage — multiple camera shots.** One calibration covers one camera shot
-(from its click-time to the next cut). To cover more of the game, calibrate a frame
-in each shot (the click-time is saved into the file) and pass them all — the build
-processes each shot bounded by the next and merges the results into one timeline:
+One calibration covers one camera shot (from its click-time to the next cut). To cover
+more, calibrate a frame in each shot (the click-time is saved into the file) and pass
+them all; the build processes each shot bounded by the next and merges the timeline:
 
 ```bash
-python scripts/calibrate.py --video game.mp4 --time 39  --out shot1.json
-python scripts/calibrate.py --video game.mp4 --time 95  --out shot2.json
-python scripts/calibrate.py --video game.mp4 --time 148 --out shot3.json
+python scripts/calibrate.py --video game.mp4 --time 4   --out shot1.json
+python scripts/calibrate.py --video game.mp4 --time 18  --out shot2.json
+python scripts/calibrate.py --video game.mp4 --time 39  --out shot3.json
 python scripts/build_webapp.py --video game.mp4 --shots shot1.json shot2.json shot3.json
 ```
 
-Within a long shot the optical-flow homography still drifts (a trained court-keypoint
-model — per-frame calibration — is the eventual fix); across shots, more
-calibrations = more of the game overlaid.
+**Jersey OCR** (EasyOCR, tracklet-voted over the shot) names the players it can read, so
+the overlay shows `#7`, `#34`… and the rationale/assistant reference them by number
+(back-facing/blurred players correctly stay unnamed).
 
-`build_webapp.py` runs the trained pipeline once — from the calibration frame
-forward (the homography propagates within one camera shot) — and writes a
-`recommendations.json` (per pause: overlay geometry in video pixels, every
-candidate action with its EPV, and a per-action rationale). The page (pure
-HTML/JS canvas, no framework) plays back instantly with **no live inference**.
-
-**Jersey OCR** (EasyOCR, tracklet-voted over the shot) names the players it can
-read, so the overlay shows `#7`, `#34`… and the rationale/assistant reference them
-by number (back-facing/blurred players correctly stay unnamed).
-
-The **assistant** works two ways. Offline (no key) it's rule-based over the
-pre-computed candidates — "show the drive", "why not shoot?", "pass to #7", "best
-play", "next option" — switching the drawn play and explaining it. Set
-`ANTHROPIC_API_KEY` and `serve_webapp.py` enables a **Claude** backend
-(`claude-opus-4-8`) for free-form questions; it answers from the same candidate
-context and can change the displayed action via a forced tool call, echoing only
-the model's own numbers. The page tries the backend and falls back to rule-based
-if it's off. Frames the confidence gate rejects (replay, close-up, occlusion) show
-"no clear recommendation" rather than a guess — the same value model and overlay
-validated above, wrapped in a UI.
-
-```bash
-export ANTHROPIC_API_KEY=...     # optional — enables the free-form Claude assistant
-python scripts/serve_webapp.py
-```
+> **The honest boundary.** The reasoning core is validated (86% on simulated, beats
+> baselines on ~240 real games); the remaining gap is the *pretrained* front-end on real
+> pixels. Automatic *from-scratch* court calibration was attempted and set aside — on
+> broadcast wood the court lines mix light and dark strokes with logo/jersey interference,
+> so classical line detection can't correspond them reliably. A trained keypoint model is
+> the real path; the ~45-second manual click calibration is the reliable stand-in. On
+> clean half-court frames the app draws the recommendation; on replays/close-ups/occluded
+> frames it (correctly) withholds via the confidence gate.
 
 ---
 
@@ -302,21 +273,29 @@ src/
   ingest/     SportVU parsing, synthetic generator, possession segmentation, real-data labels
   state/      court geometry, the state schema, conformance validator
   value/      candidate actions, sub-models, V(s), scoring, simulator, real-data builder
-  perception/ camera, homography, tracking, teams, identity, clock, state-from-CV,
-              overlay, + real video: calibrate, video (YOLO/Roboflow), jersey OCR, realvideo adapter
+  perception/ camera, homography, tracking, teams, identity, clock, state-from-CV, overlay,
+              + real video: calibrate, video (YOLO/Roboflow), jersey OCR, realvideo adapter
   render/     top-down court renderer + video overlay
   llm/        strict rationale schema, context, Claude + offline generators
-  app/        pause-to-overlay analyzer + webexport (overlay JSON) + chat_backend (Claude) + webapp/ (UI)
-tests/        unit + end-to-end tests (79)
-scripts/      demo_phase{1..4}.py, demo_realvideo.py, calibrate.py, fetch_youtube.py,
-              build_webapp.py, serve_webapp.py,
+  app/        pause-to-overlay analyzer, webexport (overlay JSON), chat_backend (Groq/Claude),
+              studio/ (setup wizard) + webapp/ (player UI)
+tests/        unit + end-to-end tests (83)
+scripts/      demo_phase{1..4}.py, demo_realvideo.py, calibrate.py, studio.py, fetch_youtube.py,
+              build_webapp.py, serve_webapp.py, benchmark.py, benchmark_charts.py, make_pdf.py,
               train_phase2.py, fetch_real_data.py, build_real_cache.py, train_real.py
 configs/      coaching_priors.json
 data/ models/ out/   gitignored — real games, cache, weights, artifacts
+timeout.pdf   complete plain-language project description
 ```
 
 ## Notes
 
 - **Scope:** half-court offense, ball-handler decisions, one recommendation set per pause.
-- **Team-specific layer:** nothing in perception is team-specific; personnel priors, playbook, and coaching priors are swappable config surfaces (`configs/coaching_priors.json`).
-- **The learned perception front-end** (YOLO detection, court keypoints, jersey OCR, pose) needs annotated broadcast frames that don't exist publicly; it sits behind documented interfaces with a synthetic-broadcast stand-in that makes the geometry/tracking spine real, testable, and measurable. Plug real detectors in without touching the rest.
+- **Team-specific layer:** nothing in perception is team-specific; personnel priors,
+  playbook, and coaching priors are swappable config surfaces (`configs/coaching_priors.json`).
+- **Secrets:** `ROBOFLOW_API_KEY`, `GROQ_API_KEY`, `ANTHROPIC_API_KEY` are read from the
+  environment only and never committed.
+- **The learned perception front-end** (detection, court keypoints, jersey OCR, pose) needs
+  annotated broadcast frames that don't exist publicly; it sits behind documented interfaces
+  with a synthetic-broadcast stand-in that makes the geometry/tracking spine real, testable,
+  and measurable. Plug real detectors in without touching the rest.
