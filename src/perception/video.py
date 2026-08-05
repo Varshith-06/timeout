@@ -232,10 +232,12 @@ class RoboflowWorkflowDetector(Detector):
     api_key: str = field(default_factory=lambda: os.environ.get("ROBOFLOW_API_KEY", ""))
     conf: float = 0.2
     ball_conf: float = 0.05
-    timeout: float = 120.0
+    timeout: float = 60.0
+    retries: int = 3          # transient serverless timeouts/5xx are common under concurrency
 
     def detect(self, image: np.ndarray, frame_idx: int) -> FrameDetections:
         import base64
+        import time
         import cv2
         import requests
         if not self.api_key:
@@ -245,8 +247,26 @@ class RoboflowWorkflowDetector(Detector):
         url = f"{self.api_url}/infer/workflows/{self.workspace}/{self.workflow_id}"
         body = {"api_key": self.api_key, "inputs": {
             "image": {"type": "base64", "value": b64}, "classes": self.classes}}
-        r = requests.post(url, json=body, timeout=self.timeout)
-        r.raise_for_status()
+        # Retry transient timeouts / 5xx with backoff. A single slow frame must not
+        # crash a whole multi-minute build — after the last attempt we skip THIS
+        # frame (empty detections) and let the tracker interpolate across it.
+        r = None
+        for attempt in range(self.retries):
+            try:
+                r = requests.post(url, json=body, timeout=self.timeout)
+                if r.status_code >= 500:
+                    raise requests.exceptions.HTTPError(f"{r.status_code} server error")
+                r.raise_for_status()
+                break
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError,
+                    requests.exceptions.HTTPError) as e:
+                if r is not None and r.status_code in (401, 403):
+                    raise RuntimeError(f"Roboflow auth failed ({r.status_code}); check $ROBOFLOW_API_KEY") from e
+                if attempt == self.retries - 1:
+                    print(f"  frame {frame_idx}: detector unreachable after {self.retries} tries "
+                          f"({type(e).__name__}); skipping this frame")
+                    return FrameDetections(frame_idx, [])
+                time.sleep(1.5 * (attempt + 1))
         dets = []
         for p in _roboflow_predictions(r.json()):
             ours = _match_class(p.get("class", "").strip())   # classes may have leading spaces
