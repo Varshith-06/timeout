@@ -1,0 +1,7 @@
+# Treat these as binary — never apply line-ending conversion
+*.pdf binary
+*.png binary
+*.pt binary
+*.pkl binary
+*.npz binary
+*.mp4 binary
