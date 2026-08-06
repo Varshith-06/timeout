@@ -2,7 +2,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Supporting resources for running the pre-compute pass as a SageMaker
   Processing job: an ECR repository for the job image, an S3 bucket for job
-  input/output, and a least-privilege execution role.
+  input/output, a least-privilege execution role, and a CodeBuild project that
+  builds the job image in AWS so no local Docker daemon is required.
 
 Parameters:
   ProjectName:
@@ -98,6 +99,96 @@ Resources:
                   - cloudwatch:PutMetricData
                 Resource: "*"
 
+  # --- Building the image without a local Docker daemon --------------------
+  # Docker Desktop needs a working WSL2 backend on Windows Home, which is not a
+  # given; CodeBuild has a real Docker daemon and is billed by the second. The
+  # Dockerfile is unchanged — only where it is built moves.
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-build-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: build-permissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: PushJobImage
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:CompleteLayerUpload
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource: !GetAtt ImageRepository.Arn
+              # Docker login is account-scoped by design and takes no resource.
+              - Sid: EcrAuth
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: ReadBuildContext
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "${DataBucket.Arn}/*"
+              - Sid: BuildLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  ImageBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}-image-build"
+      ServiceRole: !GetAtt BuildRole.Arn
+      # 1 hour: the CPU torch wheels are the slow part of this build.
+      TimeoutInMinutes: 60
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        # Required to run a Docker daemon inside the build container.
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: ECR_URI
+            Value: !GetAtt ImageRepository.RepositoryUri
+          - Name: IMAGE_TAG
+            Value: latest
+          - Name: DOCKERFILE
+            Value: deploy/aws/sagemaker/Dockerfile
+      Source:
+        Type: S3
+        # Placeholder: build_image_codebuild.py overrides this per run with the
+        # key of the context archive it just uploaded.
+        Location: !Sub "${DataBucket}/build/source.zip"
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - echo "logging in to $ECR_URI"
+                - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_URI"
+            build:
+              commands:
+                - docker build -f "$DOCKERFILE" -t "$ECR_URI:$IMAGE_TAG" .
+            post_build:
+              commands:
+                - docker push "$ECR_URI:$IMAGE_TAG"
+                - echo "pushed $ECR_URI:$IMAGE_TAG"
+
 Outputs:
   RepositoryUri:
     Value: !GetAtt ImageRepository.RepositoryUri
@@ -105,3 +196,6 @@ Outputs:
     Value: !Ref DataBucket
   ExecutionRoleArn:
     Value: !GetAtt ExecutionRole.Arn
+  ImageBuildProject:
+    Value: !Ref ImageBuildProject
+    Description: CodeBuild project that builds and pushes the job image.

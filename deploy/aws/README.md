@@ -100,6 +100,42 @@ python deploy\aws\sagemaker\run_job.py `
     --roster roster_game2.json
 ```
 
+### Building the image without a local Docker daemon
+
+`build_and_push.ps1` needs a working Docker daemon. On Windows Home that means
+the WSL2 backend — Hyper-V is not available on that edition — and WSL2 can fail
+in ways no Docker-side fix reaches (a broken Host Compute Service will refuse to
+create any VM, so `wsl -d <distro> -e echo ok` fails for *every* distro, not just
+Docker's). The container path is then unavailable locally while the pipeline it
+builds remains perfectly runnable in the cloud.
+
+`build_image_codebuild.py` builds it in CodeBuild instead:
+
+```powershell
+python deploy\aws\sagemaker\build_image_codebuild.py
+```
+
+It packs the build context (only the paths the Dockerfile COPYs — sending the
+repo would mean uploading tens of GB of clips), uploads it to the job bucket,
+runs the CodeBuild project from the stack, and streams the build log. **The
+Dockerfile is unchanged**; only the machine running `docker build` moves. It is
+also faster than building locally, because the layers reach ECR from inside AWS
+rather than over a home uplink.
+
+> **New accounts start with a CodeBuild quota of zero.** `StartBuild` then fails
+> with `AccountLimitExceededException: Cannot have more than 0 builds in queue`.
+> That is an account limit, not a broken project. Request it — the quota is
+> adjustable and the increase is free:
+>
+> ```powershell
+> aws service-quotas request-service-quota-increase `
+>     --service-code codebuild --quota-code L-9D07B6EF --desired-value 1
+> ```
+>
+> `L-9D07B6EF` is *Concurrently running builds for Linux/Small*, which is what
+> `BUILD_GENERAL1_SMALL` consumes. Check progress with
+> `aws service-quotas list-requested-service-quota-change-history --service-code codebuild`.
+
 `run_job.py` stages the inputs to S3, starts the job, tails its CloudWatch logs,
 and downloads the result to `out\webapp_sagemaker\` — which `deploy.ps1 -Source
 out\webapp_sagemaker` will then publish.
