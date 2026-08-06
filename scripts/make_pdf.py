@@ -188,6 +188,68 @@ def build():
                     "clicked points — under about 1.5 ft is good; these are all well within "
                     "that.", SMALL)]
 
+    story += [P("Per-frame calibration — the trained keypoint model", H2)]
+    story += [P("A click calibration is solved on <i>one</i> frame and carried across the shot "
+                "by optical flow, so its accuracy decays with distance from that frame. Measured "
+                "on a real shot, the carried mapping drifts from 0.18 ft to <b>16.8 ft</b> over "
+                "eleven seconds — catastrophically wrong about seven seconds after its anchor. "
+                "The fix is a model that finds the court landmarks independently in every frame.", BODY)]
+    story += [P("The obstacle is labels: hand-marking broadcast frames is exactly the work the "
+                "click calibration was invented to avoid. So the labels are generated from the "
+                "calibrations that already exist. A solved calibration <i>is</i> a "
+                "pixel-to-court correspondence, so inverting it places all 26 canonical "
+                "landmarks on the frame — including the ones nobody clicked. Two harvesting "
+                "strategies follow from that:", BODY)]
+    story += [bullets([
+        "<b>Flow propagation</b> walks outward from the clicked frame and labels every frame it "
+        "passes. It gives real camera motion, but inherits the tracker’s drift — so each frame "
+        "is gated on the tracker’s own reprojection error and dropped once it degrades.",
+        "<b>Homography jitter</b> warps the verified anchor frame by a random perspective "
+        "transform and pushes the labels through the same matrix. The labels stay <i>exact</i> "
+        "however aggressive the warp, because the warp <i>is</i> the label transform. This "
+        "manufactures new camera geometry without manufacturing label error.",
+    ])]
+    story += [P("The model is a small (1.5M-parameter) encoder-decoder that outputs a heatmap "
+                "per landmark. Heatmaps rather than direct coordinates for one practical reason: "
+                "the height of each peak is a natural confidence, which is exactly what the "
+                "homography solver already expects, so an occluded landmark arrives with a low "
+                "score and is dropped by the same gate the rest of the system uses.", BODY)]
+    story += [P("A landmark that is off-frame is supervised toward an <i>empty</i> heatmap "
+                "rather than being excluded from training. Visibility is known geometrically, so "
+                "absence is a fact worth teaching; leaving it unsupervised lets the network emit "
+                "a confident peak for a landmark that is nowhere in the picture.", BODY)]
+
+    story += [P("The trap: self-consistency is not correctness", H2)]
+    story += [P("The most useful lesson from building this is a negative one. Reprojection error "
+                "only measures whether a homography agrees with the correspondences it was "
+                "fitted to. A model that hallucinates a <i>mutually consistent</i> set of "
+                "landmarks therefore reports a healthy error while projecting a court nowhere "
+                "near the real one — which is what happened, and was only caught by drawing the "
+                "result on the frame and looking at it. Worse, four points fit a homography with "
+                "zero residual by construction, so a model that finds four landmarks and "
+                "hallucinates the rest scores <i>better</i> than one that finds twenty.", BODY)]
+    story += [P("Acceptance therefore requires an independent, physical check as well: a foot of "
+                "court spans 17–56 px on the measured click calibrations, versus 1.5–5 px on "
+                "hallucinated ones — the camera has effectively been placed in the next "
+                "building. Scale is sampled only where the court is actually visible, because on "
+                "a zoomed shot the far baseline sits beyond the vanishing point where scale "
+                "legitimately explodes. The check accepts all seven real calibrations and "
+                "rejects the bad predictions.", BODY)]
+    story += [P("Where it stands", H2)]
+    story += [P("Trained on 683 auto-labelled frames from six usable calibrated shots across "
+                "three games, validated on a whole held-out camera shot. Within a shot it has "
+                "seen, the model holds 1.55–1.74 ft while the carried calibration collapses to "
+                "16.8 ft. On a camera angle it has never seen, none of its predictions survive "
+                "the acceptance gate. Training loss keeps falling while held-out error plateaus, "
+                "which is overfitting to six camera angles: <b>the bottleneck is labelled shots, "
+                "not epochs or architecture</b>. Every additional calibrated shot feeds the same "
+                "harvesting pipeline unchanged. The feature is therefore opt-in and off by "
+                "default, and the gate refuses its held-out output rather than letting it "
+                "corrupt the overlay.", BODY)]
+    story += [P("Two calibrations were excluded from training: each had only four clicked "
+                "points, which constrains nothing, and one of them turned out to be a close-up "
+                "of a player rather than a view of the court.", SMALL)]
+
     story += [P("Detection — finding players and the ball", H2)]
     story += [P("A detector scans each sampled frame and boxes the players and the ball. The big "
                 "lesson learned here: a generic “find people” detector is the wrong "
@@ -212,6 +274,46 @@ def build():
         "and coasts its position through the gaps, so every pause has a ball — and therefore "
         "a known handler.",
     ])]
+
+    story += [P("Which detector, and why it matters", H2)]
+    story += [P("Detectors are interchangeable: each one’s own class <i>names</i> are mapped "
+                "onto the project’s schema, so swapping detectors needs no code change.", BODY)]
+    story += [bullets([
+        "<b>Hosted basketball workflow (recommended).</b> A serverless player-detection "
+        "workflow whose <i>player</i> class finds the ten on-court players and not the crowd, "
+        "with a separate <i>referee</i> class that can be dropped and reliable <i>ball</i> "
+        "detection. One network call per sampled frame, so a larger frame stride and several "
+        "concurrent workers are used; transient timeouts are retried, and a single unreachable "
+        "frame is skipped rather than failing the whole build. The API key is read from the "
+        "environment and never stored.",
+        "<b>Local YOLO (default, offline).</b> Generic COCO weights, or a fine-tuned basketball "
+        "model if one is present. Runs on the GPU when a matching CUDA build is installed.",
+    ])]
+
+    story += [P("Robustness on messy broadcast pixels", H2)]
+    story += [P("Several steps stand between a raw frame and a clean ten-player state with the "
+                "handler on the right person.", BODY)]
+    story += [bullets([
+        "<b>Referee exclusion</b> — the detector’s referee class is dropped, with a "
+        "conservative grey-uniform appearance check as a backup, deliberately tuned to risk "
+        "missing a referee rather than removing a real player.",
+        "<b>Roster gate</b> — a track survives only if its <i>median</i> court position is that "
+        "of an interior on-floor player, which removes anything projected onto the sidelines.",
+        "<b>Temporal ball tracking</b> — a constant-velocity model coasts the ball through the "
+        "frames where the detector misses it.",
+        "<b>Handler voting</b> — possession is mode-filtered over neighbouring frames, so the "
+        "ball-handler cannot flicker between players.",
+        "<b>Camera-cut truncation</b> — a shot’s mapping is valid only until the next cut, so "
+        "processing stops there; a multi-shot build anchors a fresh calibration in each shot and "
+        "merges the results into one timeline.",
+    ])]
+    story += [P("Coverage — more calibrated shots, more of the game", H2)]
+    story += [P("One calibration covers one camera shot, from its click-time to the next cut. "
+                "Calibrating a frame in each shot and passing them together lets the build "
+                "process each shot bounded by the next and merge them into a single timeline. "
+                "More calibrations is simply more coverage — and, as section 3 explains, also "
+                "the one input that would make the keypoint model generalise.", BODY)]
+
     story += [P("The confidence gate — knowing when to stay quiet", H2)]
     story += [P("Every State carries a confidence score built from how many players were tracked, "
                 "how good the court mapping is, and whether the ball was seen. Below a threshold "
@@ -365,9 +467,24 @@ def build():
                     f"{lat.get('p90_ms')} ms at the 90th percentile). The design budget was 2 "
                     f"seconds, so there is enormous headroom, and because results are pre-computed "
                     f"the app itself pauses instantly.", BODY)]
+    story += [P("Does per-frame calibration beat the carried one?", H2)]
+    story += [P("Measured over eleven seconds of a real camera shot, comparing the click "
+                "calibration carried forward by optical flow against a homography solved "
+                "independently on every frame by the keypoint model:", BODY)]
+    story += [table([["", "carried calibration", "per-frame model"],
+                     ["Error at the start of the window", "0.18 ft", "1.55 ft"],
+                     ["Error eleven seconds later", "16.8 ft", "1.74 ft"],
+                     ["Frames passing the acceptance gate", "—", "30% in-domain, 0% held-out"]],
+                    [2.6 * inch, 1.9 * inch, 1.8 * inch])]
+    story += [P("The carried mapping is stable at first and then collapses; the model does not "
+                "drift at all. That is the whole case for the approach. The last row is the "
+                "honest counterweight — on a camera angle it has never seen, none of the "
+                "model’s output survives the geometric check, so the feature stays off by "
+                "default until more shots are calibrated.", SMALL)]
+
     tests = b.get("tests", {})
     story += [P(f"And the whole system is covered by an automated test suite: "
-                f"<b>{tests.get('passed', 83)} tests pass</b> end to end.", BODY)]
+                f"<b>{tests.get('passed', 100)} tests pass</b> end to end.", BODY)]
 
     # ---------------- 8. Limitations ----------------
     story += [P("8.  Honest limitations", H1)]
@@ -379,10 +496,13 @@ def build():
         "hard; V(s) barely beats a flat average. It needs smoothed multi-step returns and more "
         "data to improve. The action <i>ranking</i> still works because it leans mostly on the "
         "three strong sub-models.",
-        "<b>Calibration is manual.</b> You click court landmarks once per camera angle. An "
-        "automatic court-line detector was tried and set aside — broadcast courts mix light "
-        "and dark lines with logo and jersey interference, so it wasn’t reliable. A trained "
-        "keypoint model is the eventual fix.",
+        "<b>Calibration is still manual in practice.</b> You click court landmarks once per "
+        "camera angle. An automatic court-line detector was tried and set aside — broadcast "
+        "courts mix light and dark lines with logo and jersey interference. The trained keypoint "
+        "model (section 3) is built, tested and wired in, and it demonstrably removes the drift "
+        "the carried calibration suffers; but on six calibrated shots it does not yet generalise "
+        "to an unseen camera angle, so it stays off by default. The bottleneck is labelled "
+        "shots, and calibrating more of them needs no code change.",
         "<b>Coverage has gaps.</b> Recommendations exist only inside calibrated camera shots; "
         "between them (and after a cut) the app honestly shows nothing rather than a stale arrow. "
         "More calibrations = more coverage.",
@@ -391,8 +511,71 @@ def build():
         "investigate — a scoring question, not a detection one.",
     ])]
 
-    # ---------------- 9. Running it ----------------
-    story += [P("9.  Running it yourself", H1)]
+    # ---------------- 9. Deployment ----------------
+    story += [P("9.  Deployment", H1)]
+    story += [P("The app is deployed as a public web page, and the pre-compute pass can run as "
+                "a batch job on AWS. The two are independent: the page is meant to stay up and "
+                "costs cents a month, while the job runs once per clip and leaves nothing "
+                "running afterwards.", BODY)]
+
+    story += [P("The web app — object storage plus a CDN", H2)]
+    story += [P("The page is three files: the HTML, the pre-computed recommendations, and the "
+                "clip itself. In the intended design they sit in a <i>private</i> bucket that "
+                "only the CDN can read, signed through an origin access control, with the CDN "
+                "serving byte-range requests so the video can be scrubbed. Uploads carry "
+                "explicit content types and cache headers — the video is immutable and cached "
+                "for a year, the recommendations are not cached at all — and each deploy "
+                "invalidates the edge cache so a rebuild is visible immediately.", BODY)]
+    story += [P("There is a deliberate second path. A brand-new cloud account cannot create CDN "
+                "distributions until the provider verifies it, which fails the stack outright. "
+                "Rather than block the demo on a support queue, the deploy script takes a flag "
+                "that swaps in a plain static-website bucket: live in about a minute, at the "
+                "cost of being publicly readable and served over plain HTTP. Both templates "
+                "share the same bucket name and logical resource, so once the account is "
+                "verified the same command without the flag upgrades the stack in place — the "
+                "bucket goes private, the CDN appears in front of it, and nothing is torn down.", BODY)]
+    story += [P("The chat assistant degrades on purpose here: a static origin has no endpoint to "
+                "answer it, the page’s request fails, and it falls back to the built-in "
+                "rule-based assistant. That is better than shipping a hosted API key.", SMALL)]
+
+    story += [P("The pre-compute pass as a batch job", H2)]
+    story += [P("Batch processing job, not a hosted inference endpoint — the pipeline runs once "
+                "per clip and writes a JSON file; there is no per-request inference anywhere in "
+                "the product, so a real-time endpoint would idle at GPU prices for a workload "
+                "that never makes an online call. The image installs CPU-only tensors on "
+                "purpose: the GPU wheels add gigabytes, and on a home connection the upload "
+                "dominates the wall-clock cost of the whole exercise.", BODY)]
+    story += [P("The platform is directory-driven rather than argument-driven: declared inputs "
+                "are downloaded into the container before it starts, and whatever lands in the "
+                "declared output directory is uploaded when it exits. A small entrypoint adapts "
+                "those paths onto the existing command-line interface, so the same pipeline runs "
+                "unchanged locally and in the cloud. The execution role is scoped to this "
+                "project’s bucket and repository rather than using the broad managed policy, "
+                "and a maximum-runtime setting acts as a spend guard.", BODY)]
+
+    story += [P("Building the image without a local Docker daemon", H2)]
+    story += [P("Building the job image normally needs Docker running locally. On Windows Home "
+                "that means the WSL2 backend, because the Hyper-V backend is not offered on that "
+                "edition — and WSL2 can fail in ways no Docker-side fix reaches. On the "
+                "development machine the host compute service refuses to create <i>any</i> "
+                "virtual machine, so every Linux distribution fails identically and reinstalling "
+                "Docker changes nothing. The container path is unavailable locally while the "
+                "pipeline it builds remains perfectly runnable in the cloud.", BODY)]
+    story += [P("The answer is to move the build rather than fix the laptop: a managed build "
+                "project compiles the image in the cloud and pushes it to the registry. The "
+                "Dockerfile is unchanged and the resulting tag is identical — only the machine "
+                "running the build moves. It is also faster, because the layers reach the "
+                "registry from inside the cloud rather than over a home uplink. The build "
+                "context is packed from exactly the paths the Dockerfile copies, since shipping "
+                "the repository would mean uploading tens of gigabytes of clips.", BODY)]
+    story += [P("A recurring theme for a new cloud account: services are gated one at a time. "
+                "The CDN needs account verification; the build service starts with a "
+                "concurrency quota of zero, so the first build fails with a limit error before "
+                "the project is ever exercised. Neither is a misconfiguration, and both are "
+                "worth checking before debugging one’s own templates.", SMALL)]
+
+    # ---------------- 10. Running it ----------------
+    story += [P("10.  Running it yourself", H1)]
     story += [P("Install and run the test suite (no data or GPU needed):", BODY)]
     story += [P("pip install -e .<br/>python -m pytest -q", CODE)]
     story += [P("Build and watch the web app on a clip:", BODY)]
@@ -405,9 +588,27 @@ def build():
                 "stored) and add <font face='Courier'>--detector roboflow</font>. For the chat "
                 "assistant, set a Groq or Anthropic key. Re-run the whole benchmark with "
                 "<font face='Courier'>python scripts/benchmark.py</font>.", SMALL)]
+    story += [P("Train the court-keypoint model from calibrations you have already clicked — no "
+                "new labelling — then check it against the carried calibration and, if you want "
+                "it, build with per-frame homography:", BODY)]
+    story += [P("python scripts/train_keypoints.py \\<br/>"
+                "&nbsp;&nbsp;&nbsp;&nbsp;--pair clip.mp4 shot1.json shot2.json shot3.json<br/>"
+                "python scripts/eval_keypoints.py --video clip.mp4 --calib shot1.json "
+                "--render out/kp.png<br/>"
+                "python scripts/build_webapp.py --video clip.mp4 --shots shot1.json "
+                "--keypoint-model", CODE)]
+    story += [P("The evaluation script writes an overlay image with both mappings drawn on the "
+                "same frames. Look at it — as section 3 explains, the numeric error alone cannot "
+                "tell you whether the court is in the right place.", SMALL)]
+    story += [P("Deploy the built page, and run the pre-compute pass in the cloud:", BODY)]
+    story += [P("# static hosting; drop -NoCloudFront once the account is CDN-verified<br/>"
+                "./deploy/aws/webapp/deploy.ps1 -Source out/webapp -NoCloudFront<br/>"
+                "# build the job image without a local Docker daemon, then run the job<br/>"
+                "python deploy/aws/sagemaker/build_image_codebuild.py<br/>"
+                "python deploy/aws/sagemaker/run_job.py --video clip.mp4 --calib shot1.json", CODE)]
 
-    # ---------------- 10. Glossary ----------------
-    story += [P("10.  Glossary", H1)]
+    # ---------------- 11. Glossary ----------------
+    story += [P("11.  Glossary", H1)]
     gl = [
         ("Expected points (EPV)", "The average points a situation or action is worth — the "
          "common yardstick that lets a shot, pass, and drive be compared."),
@@ -424,6 +625,13 @@ def build():
          "unclear to trust."),
         ("SportVU", "The NBA’s official optical player-tracking data, used to train the "
          "models."),
+        ("Reprojection error", "How far a mapping misses the points it was fitted to, in feet. "
+         "A measure of self-consistency — a low value does not by itself mean the mapping is "
+         "correct."),
+        ("Keypoint heatmap", "The model’s output per court landmark: a picture of where it "
+         "believes that landmark is, whose peak height doubles as a confidence."),
+        ("Held-out shot", "A whole camera angle kept out of training, so the score measures "
+         "generalisation to an uncalibrated shot rather than memory of a familiar one."),
     ]
     rows = [["Term", "Plain meaning"]] + [[t, d] for t, d in gl]
     story += [table(rows, [1.7 * inch, 4.6 * inch])]
