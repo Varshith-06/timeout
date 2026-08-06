@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Supporting resources for running the pre-compute pass as a SageMaker
+  Processing job: an ECR repository for the job image, an S3 bucket for job
+  input/output, and a least-privilege execution role.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: timeout-precompute
+    Description: Prefix for resource names.
+
+Resources:
+  ImageRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref ProjectName
+      # The job image is rebuilt far more often than it is kept; expire old
+      # copies so an abandoned experiment does not accrue storage charges.
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep only the 3 most recent images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 3
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+
+  DataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Scoped to this project's bucket and repository rather than using the managed
+  # AmazonSageMakerFullAccess policy, which grants account-wide S3 and SageMaker.
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: job-permissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadWriteJobData
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub "${DataBucket.Arn}/*"
+              - Sid: ListJobBucket
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt DataBucket.Arn
+              - Sid: PullJobImage
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !GetAtt ImageRepository.Arn
+              # GetAuthorizationToken is account-scoped by design; it takes no
+              # resource and cannot be narrowed further.
+              - Sid: EcrAuth
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: JobLogsAndMetrics
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+
+Outputs:
+  RepositoryUri:
+    Value: !GetAtt ImageRepository.RepositoryUri
+  DataBucket:
+    Value: !Ref DataBucket
+  ExecutionRoleArn:
+    Value: !GetAtt ExecutionRole.Arn

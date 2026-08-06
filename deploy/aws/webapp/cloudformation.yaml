@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Static hosting for the NBA play recommender web app: a private S3 bucket
+  fronted by CloudFront via Origin Access Control. The bucket is never public —
+  only the distribution can read it. CloudFront serves HTTP Range requests
+  natively, which is what lets the <video> element scrub.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: timeout-webapp
+    Description: Prefix for resource names.
+
+Resources:
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    # Retain on stack delete so a teardown never silently destroys the upload;
+    # empty + delete the bucket explicitly (see deploy/aws/README.md).
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+
+  # OAC lets CloudFront sign its origin requests with SigV4, so the bucket can
+  # stay fully private. (The older OAI mechanism is legacy.)
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${ProjectName}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${ProjectName} static site"
+        DefaultRootObject: index.html
+        # PriceClass_100 = North America + Europe edge locations. Cheapest tier;
+        # viewers elsewhere still reach it, just via a further edge.
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+        IPV6Enabled: true
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          # Managed-CachingOptimized: respects origin Cache-Control, gzip/brotli,
+          # and forwards Range headers so mp4 seeking works.
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        CustomErrorResponses:
+          # A static origin has no /chat endpoint; the page's fetch fails and it
+          # falls back to the offline assistant. Keep the error uncached so a
+          # later dynamic backend isn't shadowed by a stale 403.
+          - ErrorCode: 403
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ErrorCachingMinTTL: 0
+
+  # Grant the distribution (and nothing else) read access to the bucket.
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${SiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+Outputs:
+  BucketName:
+    Value: !Ref SiteBucket
+  DistributionId:
+    Value: !Ref Distribution
+  SiteUrl:
+    Value: !Sub "https://${Distribution.DomainName}"
+    Description: Public URL of the web app.

@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Fallback static hosting for the NBA play recommender web app: an S3 website
+  bucket with no CloudFront in front of it. Use this when the account cannot
+  create CloudFront distributions (a new account awaiting verification). The
+  trade-off is deliberate and visible: the bucket is world-readable and the
+  endpoint is HTTP-only. S3 website endpoints serve HTTP Range requests, so the
+  <video> element still scrubs. Switch back to cloudformation.yaml once
+  CloudFront is available.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: timeout-webapp
+    Description: Prefix for resource names.
+
+Resources:
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    # Match the CloudFront template: a teardown never silently destroys the
+    # upload; empty + delete the bucket explicitly (see deploy/aws/README.md).
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-${AWS::AccountId}"
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      # Public read is the whole point of this fallback, so every block that
+      # would otherwise veto the bucket policy below is switched off.
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: false
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: false
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [GET, HEAD]
+            AllowedOrigins: ["*"]
+            AllowedHeaders: ["*"]
+            ExposedHeaders: [Content-Length, Content-Range, Accept-Ranges]
+            MaxAge: 3000
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublicRead
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "${SiteBucket.Arn}/*"
+
+Outputs:
+  BucketName:
+    Value: !Ref SiteBucket
+  SiteUrl:
+    Value: !GetAtt SiteBucket.WebsiteURL
+    Description: Public URL of the web app (HTTP only — no CDN).

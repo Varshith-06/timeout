@@ -1,0 +1,126 @@
+{
+  "teams": [
+    {
+      "id": "GSW",
+      "players": [
+        {
+          "jersey": 28,
+          "name": "C. Bassey"
+        },
+        {
+          "jersey": 10,
+          "name": "J. Butler III"
+        },
+        {
+          "jersey": 18,
+          "name": "L. Cryer"
+        },
+        {
+          "jersey": 30,
+          "name": "S. Curry"
+        },
+        {
+          "jersey": 23,
+          "name": "D. Green"
+        },
+        {
+          "jersey": 20,
+          "name": "A. Horford"
+        },
+        {
+          "jersey": 33,
+          "name": "M. Leons"
+        },
+        {
+          "jersey": 8,
+          "name": "D. Melton"
+        },
+        {
+          "jersey": 4,
+          "name": "M. Moody"
+        },
+        {
+          "jersey": 2,
+          "name": "B. Podziemski"
+        },
+        {
+          "jersey": 7,
+          "name": "K. Porzingis"
+        },
+        {
+          "jersey": 3,
+          "name": "W. Richard"
+        },
+        {
+          "jersey": 15,
+          "name": "G. Santos"
+        },
+        {
+          "jersey": 19,
+          "name": "N. Williams"
+        }
+      ]
+    },
+    {
+      "id": "NYK",
+      "players": [
+        {
+          "jersey": 5,
+          "name": "J. Alvarado"
+        },
+        {
+          "jersey": 8,
+          "name": "O. Anunoby"
+        },
+        {
+          "jersey": 25,
+          "name": "M. Bridges"
+        },
+        {
+          "jersey": 11,
+          "name": "J. Brunson"
+        },
+        {
+          "jersey": 0,
+          "name": "J. Clarkson"
+        },
+        {
+          "jersey": 4,
+          "name": "P. Dadiet"
+        },
+        {
+          "jersey": 51,
+          "name": "M. Diawara"
+        },
+        {
+          "jersey": 3,
+          "name": "J. Hart"
+        },
+        {
+          "jersey": 50,
+          "name": "T. Jemison III"
+        },
+        {
+          "jersey": 13,
+          "name": "T. Kolek"
+        },
+        {
+          "jersey": 2,
+          "name": "M. McBride"
+        },
+        {
+          "jersey": 9,
+          "name": "K. McCullar Jr."
+        },
+        {
+          "jersey": 44,
+          "name": "L. Shamet"
+        },
+        {
+          "jersey": 32,
+          "name": "K. Towns"
+        }
+      ]
+    }
+  ]
+}

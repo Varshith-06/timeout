@@ -1,0 +1,21 @@
+# The build context is the repo root, which holds ~35 GB of clips in data/ and
+# ~1 GB of build output in out/. Deny everything, then re-admit exactly what the
+# Processing-job image copies. Docker cannot re-include a path whose parent is
+# still excluded, hence the explicit models/ dance.
+*
+
+!src
+!scripts
+!deploy
+!yolo11l.pt
+
+!models
+models/*
+!models/phase2
+
+# Never ship caches, secrets, or credentials into an image layer.
+**/__pycache__
+**/*.pyc
+**/.env
+**/*.egg-info
+.git
