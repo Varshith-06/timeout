@@ -13,6 +13,7 @@ import numpy as np
 from src.perception.calibrate import Calibration, HomographyTracker, _LANDMARK_COURT
 from src.perception.camera import BroadcastCamera
 from src.perception.cuts import CutDetector
+from src.perception.homography import plausible_court_homography, solve_homography
 from src.perception.synthetic_broadcast import BroadcastClip, BroadcastFrame
 
 
@@ -40,7 +41,8 @@ def looks_like_placeholder(video, detector=None) -> bool:
 def build_realvideo_clip(video, detector, calibration: Calibration,
                          pause_sec: float, window_sec: float, stride: int,
                          detect_workers: int = 1, exclude_refs: bool = True,
-                         ball_seed=None, max_shot_sec: float = 45.0) -> BroadcastClip:
+                         ball_seed=None, max_shot_sec: float = 45.0,
+                         keypoint_model=None, min_keypoints: int = 6) -> BroadcastClip:
     """Build a BroadcastClip from the ``window_sec`` of video before ``pause_sec``.
 
     ``detect_workers`` > 1 runs the (independent) per-frame detections concurrently
@@ -49,6 +51,19 @@ def build_realvideo_clip(video, detector, calibration: Calibration,
     drops referee-looking (striped) person detections. ``ball_seed`` is a pixel
     (x, y) the user clicked for the ball at the first frame — it overrides the
     (often wrong) initial ball detection so the tracker starts locked on.
+
+    ``keypoint_model`` (a
+    :class:`~src.perception.keypoint_model.CourtKeypointDetector`) switches the
+    court mapping from *propagated* to *per-frame*: each frame's landmarks are
+    predicted directly instead of being optical-flow-carried from the click
+    frame, which is what removes drift within a shot.
+
+    The two are used together rather than either/or. A frame takes the model's
+    keypoints only when they actually solve — at least ``min_keypoints`` of them
+    and a homography that passes the reprojection gate — and otherwise falls back
+    to the flow-tracked clicks. So the model can only improve a frame it is
+    confident about, and a frame it fails (heavy occlusion, an unusual angle)
+    degrades to exactly today's behaviour rather than to nothing.
     """
     import cv2
     from src.perception.detection import Detection, FrameDetections
@@ -99,20 +114,47 @@ def build_realvideo_clip(video, detector, calibration: Calibration,
             kept.append(Detection("ball", (bx - 8, by - 8, bx + 8, by + 8), 1.0))
         fd.detections = kept
 
+    # One batched pass for the whole window — the GPU is idle a frame at a time.
+    model_kp = None
+    if keypoint_model is not None:
+        model_kp = keypoint_model.predict_batch([rgb for _, rgb, _, _ in frames])
+
     clip = BroadcastClip()
     tracker: HomographyTracker | None = None
-    for (i, rgb, gray, cut), det in zip(frames, dets):
+    n_model = 0
+    for n, ((i, rgb, gray, cut), det) in enumerate(zip(frames, dets)):
         if tracker is None:
             tracker = HomographyTracker(gray, calibration)
-            kp = np.array([calibration.points[n] for n in names], dtype=float)
+            kp = np.array([calibration.points[n_] for n_ in names], dtype=float)
         else:
             tracker.update(gray)           # propagate H via optical flow
             kp = tracker.pts.reshape(-1, 2)
         if cut and tracker is not None:    # a cut breaks the calibration
             tracker = HomographyTracker(gray, calibration)
+
+        kp_px, kp_ct, kp_cf = kp.copy(), court_pts.copy(), np.ones(len(names))
+        if model_kp is not None:
+            m_px, m_ct, m_cf = model_kp[n]
+            # Accept the model only when it stands on its own: enough landmarks,
+            # a homography that clears the pipeline's reprojection gate, AND a
+            # result that is geometrically believable. The last condition is not
+            # redundant — reprojection error only measures agreement with the
+            # model's own keypoints, so a confidently wrong prediction scores
+            # well. Without the plausibility check a bad frame would *replace* a
+            # good calibration with nonsense.
+            if len(m_px) >= min_keypoints:
+                res = solve_homography(m_px, m_ct, m_cf)
+                if (res.ok and res.n_points >= min_keypoints
+                        and plausible_court_homography(res.H, (W, H))):
+                    kp_px, kp_ct, kp_cf = m_px, m_ct, m_cf
+                    n_model += 1
+
         clip.frames.append(BroadcastFrame(
             frame_idx=i, camera=cam, detections=det,
-            kp_pixels=kp.copy(), kp_court=court_pts.copy(), kp_conf=np.ones(len(names)),
+            kp_pixels=kp_px, kp_court=kp_ct, kp_conf=kp_cf,
             clock_read=None, cut=cut, image=rgb,
         ))
+    if model_kp is not None and frames:
+        print(f"  court keypoints: {n_model}/{len(frames)} frames solved per-frame "
+              f"({100.0 * n_model / len(frames):.0f}%), rest fell back to the calibration")
     return clip

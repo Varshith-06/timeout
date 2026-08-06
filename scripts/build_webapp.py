@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np  # noqa: E402
 
+from src.perception.keypoint_model import DEFAULT_WEIGHTS as KP_DEFAULT_WEIGHTS  # noqa: E402
+
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Pre-compute web-app recommendations for a clip")
@@ -59,6 +61,12 @@ def main(argv=None) -> int:
     ap.add_argument("--rf-classes", default="player, referee, basketball")
     ap.add_argument("--detect-workers", type=int, default=1,
                     help="parallel detection threads (use ~12 for the network roboflow detector)")
+    ap.add_argument("--keypoint-model", nargs="?", const=KP_DEFAULT_WEIGHTS, default=None,
+                    metavar="WEIGHTS",
+                    help="solve the court homography PER FRAME with the trained keypoint model "
+                         f"instead of propagating the calibration (default {KP_DEFAULT_WEIGHTS}). "
+                         "Removes within-shot drift; frames the model cannot solve fall back to "
+                         "the calibration automatically. Train it with scripts/train_keypoints.py")
     args = ap.parse_args(argv)
 
     from src.app.webexport import build_overlay_spec
@@ -87,6 +95,20 @@ def main(argv=None) -> int:
     else:
         detector = PretrainedYOLODetector()
         print(f"detector: local YOLO ({detector.weights})")
+
+    # Per-frame court calibration. Missing weights are a hard error rather than a
+    # silent downgrade: --keypoint-model was asked for explicitly, and quietly
+    # producing the drifting propagated overlay instead would be indistinguishable
+    # from the model working badly.
+    kp_model = None
+    if args.keypoint_model:
+        from src.perception.keypoint_model import CourtKeypointDetector
+        kp_model = CourtKeypointDetector(weights=args.keypoint_model)
+        if not kp_model.available:
+            print(f"error: no keypoint weights at {args.keypoint_model} — train them with "
+                  f"scripts/train_keypoints.py, or drop --keypoint-model to use the calibration")
+            return 2
+        print(f"court keypoints: per-frame model ({args.keypoint_model} on {kp_model.device})")
     sm = SubModels.load(args.models)
     vm = ValueModel.load(Path(args.models) / "value.pt")
     roster = None
@@ -116,7 +138,8 @@ def main(argv=None) -> int:
         """Detect+track one camera shot from its calibration, export its pauses."""
         clip = build_realvideo_clip(vid, detector, calib, pause_sec=end_bound,
                                     window_sec=end_bound - start_sec, stride=args.stride,
-                                    detect_workers=args.detect_workers, ball_seed=calib.ball_px)
+                                    detect_workers=args.detect_workers, ball_seed=calib.ball_px,
+                                    keypoint_model=kp_model)
         # The homography is valid only within this shot — truncate at the first cut.
         cut_idx = next((i for i, f in enumerate(clip.frames) if i > 0 and f.cut), None)
         shot_end = end_bound

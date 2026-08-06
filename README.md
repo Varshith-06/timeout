@@ -255,12 +255,80 @@ python scripts/build_webapp.py --video game.mp4 --shots shot1.json shot2.json sh
 the overlay shows `#7`, `#34`… and the rationale/assistant reference them by number
 (back-facing/blurred players correctly stay unnamed).
 
+### Per-frame calibration — the trained keypoint model
+
+A click calibration is solved on **one** frame and carried across the shot by optical
+flow, so its accuracy decays with distance from that frame: within-shot drift. The fix
+is a model that finds the court landmarks in *every* frame independently.
+
+```bash
+# 1. train from the calibrations you already have (no new labelling)
+python scripts/train_keypoints.py \
+    --pair game.mp4 shot1.json shot2.json shot4.json \
+    --pair clip.mp4 early_a.json early_b.json calib.json
+
+# 2. check it against the propagated calibration on a real shot
+python scripts/eval_keypoints.py --video clip.mp4 --calib calib.json --render out/kp.png
+
+# 3. build with per-frame homography
+python scripts/build_webapp.py --video clip.mp4 --shots early_a.json early_b.json --keypoint-model
+```
+
+**The labels come from the calibrations, not from hand-labelling.** A solved calibration
+*is* a pixel↔court correspondence, so inverting its `H` places all 26 canonical landmarks
+— including the ones nobody clicked. Walking the shot with the flow tracker labels every
+frame it passes (gated on the tracker's own reprojection error, so drifted frames are
+dropped before they rot the labels), and warping the verified anchor frames by random
+perspective transforms manufactures new camera geometry with *exact* labels, because the
+warp is the label transform.
+
+Heatmap regression, not coordinate regression: the peak height is a per-point confidence,
+which is precisely what `solve_homography` already consumes — so low-confidence landmarks
+are dropped by the same RANSAC + reprojection gate the synthetic path uses. The two
+methods are used **together**: a frame takes the model's keypoints only when they solve on
+their own *and* the resulting homography is geometrically believable, and otherwise falls
+back to the propagated calibration.
+
+That second condition is not redundant, and it is the main lesson from building this.
+Reprojection error only measures whether a homography agrees with the correspondences it
+was fitted to, so a model that hallucinates a *self-consistent* set of landmarks reports a
+low error while projecting a court that is nowhere near the real one. `plausible_court_
+homography` checks the geometry independently: on the measured click calibrations a foot
+of court spans 17–56 px, whereas hallucinated homographies put it at 1.5–5 px — the camera
+has effectively been placed in the next building. Scale is sampled only where the court is
+actually *visible*, because on a zoomed shot the far baseline sits past the vanishing point
+where scale legitimately explodes.
+
+#### Where it stands — measured, not claimed
+
+Trained on **683 auto-labelled frames from 6 usable calibrated shots** across 3 games (two
+calibrations were excluded: 4 clicked points fit a homography with zero residual by
+construction, so they constrain nothing). Validation holds out a whole camera shot.
+
+| | propagated (today) | per-frame model |
+|---|---|---|
+| within a trained shot, over 11 s | drifts **0.18 → 16.8 ft** | flat **1.55 → 1.74 ft** |
+| frames passing the full acceptance gate | — | 30% in-domain, **0% held-out** |
+| held-out keypoint error | — | 53 px median (~5–10 ft of court) |
+
+The honest reading: **the propagated calibration demonstrably drifts** — it is catastrophically
+wrong ~7 s after its anchor — and the model is stable where the calibration is not. But at
+this data volume the model does not generalise to a camera shot it has never seen, and the
+plausibility gate correctly rejects all of its held-out predictions rather than letting them
+corrupt the overlay. So `--keypoint-model` is **opt-in and off by default**, and the honest
+bottleneck is labelled shots, not architecture or epochs: training loss keeps falling while
+held-out error plateaus, which is overfitting to six camera angles. Every additional
+calibrated shot feeds the same harvesting pipeline unchanged.
+
 > **The honest boundary.** The reasoning core is validated (86% on simulated, beats
 > baselines on ~240 real games); the remaining gap is the *pretrained* front-end on real
 > pixels. Automatic *from-scratch* court calibration was attempted and set aside — on
 > broadcast wood the court lines mix light and dark strokes with logo/jersey interference,
-> so classical line detection can't correspond them reliably. A trained keypoint model is
-> the real path; the ~45-second manual click calibration is the reliable stand-in. On
+> so classical line detection can't correspond them reliably. The keypoint model above is
+> the real path, but it is trained on the handful of camera shots that were calibrated
+> across two games: it is a model for *these broadcasts*, not a general NBA court model,
+> and widening it means calibrating more shots (the harvesting code does not change). The
+> ~45-second manual click calibration remains the reliable stand-in and the fallback. On
 > clean half-court frames the app draws the recommendation; on replays/close-ups/occluded
 > frames it (correctly) withholds via the confidence gate.
 
@@ -274,15 +342,18 @@ src/
   state/      court geometry, the state schema, conformance validator
   value/      candidate actions, sub-models, V(s), scoring, simulator, real-data builder
   perception/ camera, homography, tracking, teams, identity, clock, state-from-CV, overlay,
-              + real video: calibrate, video (YOLO/Roboflow), jersey OCR, realvideo adapter
+              + real video: calibrate, video (YOLO/Roboflow), jersey OCR, realvideo adapter,
+              + per-frame calibration: keypoints (canonical), keypoint_data (auto-labeller),
+                keypoint_model (heatmap net + detector)
   render/     top-down court renderer + video overlay
   llm/        strict rationale schema, context, Claude + offline generators
   app/        pause-to-overlay analyzer, webexport (overlay JSON), chat_backend (Groq/Claude),
               studio/ (setup wizard) + webapp/ (player UI)
-tests/        unit + end-to-end tests (83)
+tests/        unit + end-to-end tests (96)
 scripts/      demo_phase{1..4}.py, demo_realvideo.py, calibrate.py, studio.py, fetch_youtube.py,
               build_webapp.py, serve_webapp.py, benchmark.py, benchmark_charts.py, make_pdf.py,
-              train_phase2.py, fetch_real_data.py, build_real_cache.py, train_real.py
+              train_phase2.py, fetch_real_data.py, build_real_cache.py, train_real.py,
+              train_keypoints.py, eval_keypoints.py
 configs/      coaching_priors.json
 data/ models/ out/   gitignored — real games, cache, weights, artifacts
 timeout.pdf   complete plain-language project description

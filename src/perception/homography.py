@@ -55,6 +55,11 @@ def solve_homography(pixel_pts, court_pts, conf=None, conf_thresh=0.5,
         return HomographyResult(None, float("inf"), 0, False)
 
     inliers = mask.ravel().astype(bool)
+    # RANSAC can return an H whose consensus set is empty (degenerate or wildly
+    # inconsistent correspondences). That is a failed solve, not a usable H —
+    # and projecting the empty point set would otherwise crash below.
+    if not inliers.any():
+        return HomographyResult(None, float("inf"), 0, False)
     proj = project_points(H, pixel_pts[inliers])
     err = np.linalg.norm(proj - court_pts[inliers], axis=1)  # feet
     median = float(np.median(err)) if len(err) else float("inf")
@@ -63,8 +68,15 @@ def solve_homography(pixel_pts, court_pts, conf=None, conf_thresh=0.5,
 
 
 def project_points(H: np.ndarray, pts: np.ndarray) -> np.ndarray:
-    """Apply a 3x3 homography to (N,2) points using cv2.perspectiveTransform."""
+    """Apply a 3x3 homography to (N,2) points using cv2.perspectiveTransform.
+
+    An empty input is passed straight back: cv2 returns None rather than an empty
+    array for a zero-length point set, which would otherwise surface as an
+    AttributeError several frames later.
+    """
     pts = np.asarray(pts, dtype=np.float64).reshape(-1, 1, 2)
+    if len(pts) == 0:
+        return np.empty((0, 2), dtype=np.float64)
     out = cv2.perspectiveTransform(pts, H)
     return out.reshape(-1, 2)
 
@@ -78,6 +90,63 @@ def project_feet_to_court(H: np.ndarray, boxes: np.ndarray) -> np.ndarray:
     boxes = np.asarray(boxes, dtype=float)
     feet = np.column_stack([(boxes[:, 0] + boxes[:, 2]) / 2, boxes[:, 3]])
     return project_points(H, feet)
+
+
+def plausible_court_homography(H: np.ndarray, img_size, min_px_per_ft: float = 8.0,
+                               max_px_per_ft: float = 150.0,
+                               max_scale_ratio: float = 12.0,
+                               min_visible: int = 6) -> bool:
+    """Is this H geometrically believable as a broadcast view of a court?
+
+    Reprojection error cannot answer that. It only asks whether a homography is
+    consistent with the correspondences it was fitted to — so a keypoint model
+    that hallucinates a self-consistent but wrong set of landmarks produces a
+    *low* error and a confidently wrong court. This is the independent check: it
+    ignores the correspondences entirely and asks whether the mapping looks like
+    a camera pointed at a basketball court.
+
+    The test is scale. On the measured click calibrations a foot of court spans
+    17-56 px at broadcast zoom, tightly grouped; a hallucinated homography puts
+    it at 1.5-5 px — it has effectively placed the camera in the next building.
+    That is a 5-10x separation, which is why an absolute band works here.
+
+    Scale is sampled **only where the court is actually visible**. Probing fixed
+    court locations instead is what makes this fragile: on a zoomed shot the far
+    baseline sits beyond the vanishing point, where scale legitimately runs to
+    tens of thousands of px/ft, and a real calibration gets rejected. Convexity
+    of the projected court fails for the same reason and is deliberately not
+    tested.
+    """
+    if H is None or not np.isfinite(np.asarray(H)).all():
+        return False
+    try:
+        H_court_to_px = np.linalg.inv(np.asarray(H, dtype=np.float64))
+    except np.linalg.LinAlgError:
+        return False
+
+    w, h = float(img_size[0]), float(img_size[1])
+    gx, gy = np.meshgrid(np.linspace(2.0, 92.0, 10), np.linspace(2.0, 48.0, 6))
+    grid = np.column_stack([gx.ravel(), gy.ravel()])
+
+    a = project_points(H_court_to_px, grid)
+    b = project_points(H_court_to_px, grid + np.array([5.0, 0.0]))
+    ok = np.isfinite(a).all(axis=1) & np.isfinite(b).all(axis=1)
+    inside = ok & (a[:, 0] >= 0) & (a[:, 0] < w) & (a[:, 1] >= 0) & (a[:, 1] < h)
+    if inside.sum() < min_visible:
+        return False        # almost no court in frame: nothing to trust
+
+    px_per_ft = np.linalg.norm(b[inside] - a[inside], axis=1) / 5.0
+    px_per_ft = px_per_ft[np.isfinite(px_per_ft) & (px_per_ft > 0)]
+    if len(px_per_ft) < min_visible:
+        return False
+
+    med = float(np.median(px_per_ft))
+    if not (min_px_per_ft <= med <= max_px_per_ft):
+        return False
+    # Within the visible court, perspective foreshortening is bounded; a wild
+    # spread means a near-singular fit rather than a real camera.
+    lo, hi = np.percentile(px_per_ft, [5, 95])
+    return bool(lo > 0 and hi / lo <= max_scale_ratio)
 
 
 class TemporalHomography:
