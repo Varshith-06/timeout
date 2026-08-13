@@ -59,8 +59,8 @@ boxed 30–40.
 
 A click calibration is solved on one frame and carried across the shot by optical flow, so
 it drifts. A keypoint model that finds the landmarks in *every* frame fixes that — trained
-on 683 frames auto-labelled from the existing calibrations (no hand-labelling), held out by
-whole camera shot.
+on 683 frames auto-labelled from the existing calibrations across seven camera shots on three
+broadcasts (no hand-labelling) — 635 for training, one whole shot (48 frames) held out.
 
 | | propagated (default) | per-frame model |
 |---|---|---|
