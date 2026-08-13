@@ -32,6 +32,22 @@ def _json(p, default=None):
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else (default or {})
 
 
+def _keypoint_meta() -> dict:
+    """Held-out metrics recorded inside the trained keypoint checkpoint itself.
+
+    Read from the weights rather than a side-car JSON so the numbers printed here
+    can only ever describe the checkpoint that actually shipped.
+    """
+    p = ROOT / "models" / "court_keypoints.pt"
+    if not p.exists():
+        return {}
+    try:
+        import torch
+        return torch.load(str(p), map_location="cpu", weights_only=False).get("meta", {})
+    except Exception:
+        return {}
+
+
 # ---------- styles ----------
 ss = getSampleStyleSheet()
 H1 = ParagraphStyle("H1", parent=ss["Heading1"], textColor=INK, fontSize=18, spaceBefore=18,
@@ -46,6 +62,18 @@ CAP = ParagraphStyle("CAP", parent=BODY, textColor=MUTE, fontSize=8.5, leading=1
 SMALL = ParagraphStyle("SMALL", parent=BODY, fontSize=9, textColor=MUTE, leading=13)
 CODE = ParagraphStyle("CODE", parent=ss["Code"], fontSize=8.6, textColor=INK, leading=12,
                       backColor=SOFT, borderPadding=6, spaceBefore=4, spaceAfter=8)
+# Table cells are Paragraphs, never bare strings: reportlab does not wrap a bare
+# string, so a long definition would run off the page instead of onto a new line.
+CELL = ParagraphStyle("CELL", parent=BODY, fontSize=9.2, leading=12.4, spaceAfter=0,
+                      spaceBefore=0)
+CELLH = ParagraphStyle("CELLH", parent=CELL, textColor=colors.white,
+                       fontName="Helvetica-Bold")
+CELLS = ParagraphStyle("CELLS", parent=CELL, fontSize=8.4, leading=11.2)   # dense tables
+CELLSH = ParagraphStyle("CELLSH", parent=CELLS, textColor=colors.white,
+                        fontName="Helvetica-Bold")
+
+# Usable text column: LETTER minus the 0.9" margins set on the document.
+TEXT_W = LETTER[0] - 1.8 * inch
 
 
 def P(t, s=BODY): return Paragraph(t, s)
@@ -54,15 +82,24 @@ def bullets(items, style=BULLET):
                         bulletType="bullet", start="•", leftIndent=12)
 
 
-def table(rows, widths, header=True, align_left_first=True):
-    t = Table(rows, colWidths=widths, hAlign="LEFT")
-    style = [("FONTSIZE", (0, 0), (-1, -1), 9.2), ("TEXTCOLOR", (0, 0), (-1, -1), INK),
-             ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+def _cell(v, style):
+    return v if hasattr(v, "wrap") else Paragraph(str(v), style)
+
+
+def table(rows, widths, header=True, small=False):
+    """A table whose cells wrap. ``widths`` is rescaled if it overruns the column."""
+    total = sum(widths)
+    if total > TEXT_W:                      # never let a table hang off the page
+        widths = [w * TEXT_W / total for w in widths]
+    body, head = (CELLS, CELLSH) if small else (CELL, CELLH)
+    data = [[_cell(c, head if (header and i == 0) else body) for c in row]
+            for i, row in enumerate(rows)]
+    t = Table(data, colWidths=widths, hAlign="LEFT", repeatRows=1 if header else 0)
+    style = [("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
              ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-             ("LINEBELOW", (0, 0), (-1, -2), 0.5, LINE), ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]
+             ("LINEBELOW", (0, 0), (-1, -2), 0.5, LINE), ("VALIGN", (0, 0), (-1, -1), "TOP")]
     if header:
-        style += [("BACKGROUND", (0, 0), (-1, 0), INK), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                  ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, 0), 9.2)]
+        style += [("BACKGROUND", (0, 0), (-1, 0), INK)]
     for i in range(1 + (1 if header else 0), len(rows), 2):
         style.append(("BACKGROUND", (0, i), (-1, i), SOFT))
     t.setStyle(TableStyle(style))
@@ -236,8 +273,9 @@ def build():
                 "legitimately explodes. The check accepts all seven real calibrations and "
                 "rejects the bad predictions.", BODY)]
     story += [P("Where it stands", H2)]
-    story += [P("Trained on 683 auto-labelled frames from six usable calibrated shots across "
-                "three games, validated on a whole held-out camera shot. Within a shot it has "
+    story += [P("Trained on 683 auto-labelled frames from seven usable calibrated shots across "
+                "three broadcasts — 635 frames for training, with one whole camera shot (48 "
+                "frames) held out for validation. Within a shot it has "
                 "seen, the model holds 1.55–1.74 ft while the carried calibration collapses to "
                 "16.8 ft. On a camera angle it has never seen, none of its predictions survive "
                 "the acceptance gate. Training loss keeps falling while held-out error plateaus, "
@@ -381,13 +419,17 @@ def build():
                 "stretch. It now shows an honest “outside the calibrated segment” note "
                 "there instead.", BODY)]
 
-    # ---------------- 6. Training ----------------
-    story += [P("6.  How the models were trained", H1)]
+    # ---------------- 6. Data and training ----------------
+    story += [PageBreak()]
+    story += [P("6.  The data, and how each model was trained", H1)]
     story += [P("The scoring models learn from two kinds of data.", BODY)]
     story += [bullets([
         "<b>Synthetic data</b> — a built-in generator makes fake-but-realistic possessions "
         "with a known “right answer,” so the whole pipeline can be tested and measured "
-        "with no downloads and no GPU.",
+        "with no downloads and no GPU. The generator’s true probabilities live in exactly one "
+        "place and the learners never see them: they get features and sampled 0/1 outcomes, "
+        "the same thing real tracking would give them. That is what makes it a fair test "
+        "rather than a demo — the learned probabilities can be compared against the true ones.",
         "<b>Real data</b> — NBA 2015-16 SportVU player-tracking joined to real shot and "
         "play-by-play outcomes. The models here were trained on roughly <b>240 games</b> "
         "(about 25,000 shots, 45,000 passes, 49,000 drives, and 600,000+ situation snapshots), "
@@ -397,8 +439,322 @@ def build():
                 "possessions per team per game at roughly one point per possession — which is "
                 "a good sign the inputs are sane before any model is trained.", BODY)]
 
-    # ---------------- 7. Benchmark ----------------
-    story += [P("7.  Benchmark results", H1)]
+    story += [P("What counts as a label", H2)]
+    story += [P("Tracking data does not come with “this was a drive and it worked.” "
+                "Every label is derived, and the derivations are the part worth stating "
+                "plainly, because a model is only as honest as the thing it was told to "
+                "predict.", BODY)]
+    story += [table([
+        ["Model", "Positive / negative label, as actually derived"],
+        ["Shot make",
+         "Straight from the official shot table (made / missed, 2PT / 3PT), joined to the "
+         "tracking moment at that game clock. The distance comes from the shot label — it is "
+         "exact — and the tracking supplies only the defender context."],
+        ["Pass completion",
+         "A completed pass is a ball-handler A → ball in flight → ball-handler B transition "
+         "between two offensive players. Negatives are scarce and specific: only the "
+         "<i>last</i> pass of a possession the play-by-play says ended in a turnover is "
+         "labelled 0. That is why completion sits near 90% and the flat baseline is hard to beat."],
+        ["Drive success",
+         "The ball-handler closing at least 6 ft on the rim within about two seconds counts as "
+         "a drive; it succeeded if he got within 8 ft of the rim. Direction is the side of the "
+         "floor he started from. The handler is followed through brief possession-tag gaps "
+         "(fast dribbles) and dropped only when the ball clearly changes hands."],
+        ["V(s) — situation value",
+         "The target is the possession’s <i>realized points</i> from the play-by-play join, "
+         "attached to every 15th frame of that possession. Possessions whose "
+         "tracking-inferred offense disagrees with the play-by-play are discarded rather than "
+         "guessed at."],
+    ], [1.35 * inch, 4.95 * inch])]
+
+    story += [P("How the data is split", H2)]
+    story += [P("Every split in this project holds out whole <i>units</i>, never random rows, "
+                "and that choice is load-bearing rather than tidiness. Frames inside one "
+                "possession are near-duplicates of each other; so are frames inside one camera "
+                "shot. A random split would report a beautiful number that answers no question "
+                "anyone is asking.", BODY)]
+    story += [bullets([
+        "<b>The value stack splits by game.</b> The last fifth of the games are held out "
+        "entirely — the shot, pass and drive models and V(s) never see a frame from them. "
+        "(Training from the chunked disk cache holds out whole chunks, at least two.)",
+        "<b>The keypoint model splits by camera shot.</b> A whole calibrated shot is kept out, "
+        "so the reported error answers “does this work on a shot nobody calibrated?” — "
+        "which is why its numbers are worse, and honest.",
+    ])]
+
+    story += [P("The training runs, end to end", H2)]
+    story += [table([
+        ["Model", "Trained on", "Recipe"],
+        ["Shot / pass / drive",
+         "≈240 real games, held out by game",
+         "LightGBM binary classifiers, one fit, no early stopping needed at this size"],
+        ["V(s)",
+         "The same games’ possession states",
+         "40 epochs of Adam, weight decay, early-stopped on the held-out games"],
+        ["Court keypoints",
+         "683 frames auto-labelled from 7 calibrated shots across 3 broadcasts",
+         "40 epochs of AdamW + one-cycle schedule, best epoch kept by held-out solve rate"],
+        ["Detector, OCR, team clustering",
+         "—",
+         "Not trained here: pretrained or hosted weights, plus unsupervised clustering "
+         "(see the next section)"],
+    ], [1.5 * inch, 2.1 * inch, 2.7 * inch])]
+
+    # ---------------- 7. Model reference ----------------
+    story += [PageBreak()]
+    story += [P("7.  Every model, in detail", H1)]
+    story += [P("This section is the technical reference: what each model is, what goes in, "
+                "what comes out, and the settings it was trained with. Six things in this "
+                "project are models; two of them were trained here, one was trained here from "
+                "labels it generated itself, and three are pretrained or hosted and used as-is. "
+                "That distinction is worth being explicit about.", BODY)]
+
+    story += [P("7.1  Court-keypoint network — trained here", H2)]
+    story += [P("A small fully-convolutional encoder-decoder that finds the court in a single "
+                "frame. It is the only vision model trained in this project, and it was trained "
+                "on labels the project generated from its own click calibrations rather than on "
+                "hand-marked frames.", BODY)]
+    story += [table([
+        ["Property", "Value"],
+        ["Task", "Per-frame court-landmark detection → a homography solved every frame"],
+        ["Input", "512 × 288 RGB (16:9, matching 1280 × 720 broadcast), ImageNet-normalised"],
+        ["Output", "26 heatmaps at 128 × 72 (stride 4) — one per canonical court landmark"],
+        ["Architecture",
+         "U-Net-ish: four stride-2 encoder blocks (32 / 64 / 128 / 192 channels, each two "
+         "3×3 convs with batch-norm + ReLU), two transposed-conv decoder stages with skip "
+         "connections from the matching encoder level, then a 1×1 head. 1.53 M parameters."],
+        ["Why heatmaps, not coordinates",
+         "The peak height is a natural per-landmark confidence, which is exactly what the "
+         "homography solver already consumes — an occluded landmark arrives weak and is dropped "
+         "by the existing gate, so no new failure mode is introduced. It also keeps the "
+         "landmark’s spatial evidence (a line crossing) instead of squeezing it through a "
+         "fully-connected layer."],
+        ["Targets",
+         "Gaussians of σ = 1.8 heatmap cells at each landmark. A landmark that is off-frame is "
+         "supervised toward an <i>empty</i> heatmap — visibility is known geometrically, so "
+         "absence is a fact worth teaching. Occlusion is <i>not</i> treated as absence: a "
+         "landmark hidden behind a player keeps its gaussian."],
+        ["Loss",
+         "Foreground-weighted MSE, masked to the supervised channels, each cell weighted by "
+         "1 + 120 × target. That weight is a correctness fix, not a knob: a gaussian covers "
+         "about 30 of a heatmap’s 9,216 cells, so plain MSE is minimised by predicting zeros "
+         "everywhere — which is exactly where training converged before the weighting existed."],
+        ["Optimiser",
+         "AdamW, learning rate 2e-3, weight decay 1e-4, one-cycle schedule, batch size 8, "
+         "40 epochs, fixed seed"],
+        ["Checkpoint choice",
+         "The fraction of held-out frames yielding a usable homography, tie-broken by how tight "
+         "it is. Neither half works alone — solve rate alone rewards a model that is loosely "
+         "right everywhere, reprojection alone rewards one that is precise on four points and "
+         "blind elsewhere."],
+        ["Decoding",
+         "Sub-cell peak location by fitting a parabola to the log of the three samples around "
+         "the peak, per axis. A gaussian is exactly a parabola in the log domain, so against a "
+         "clean target the decoder contributes zero error."],
+    ], [1.35 * inch, 4.95 * inch], small=True)]
+
+    story += [P("Where its training data came from", H2)]
+    story += [P("Labels are harvested from calibrations that already exist. Inverting a solved "
+                "calibration places all 26 landmarks on its frame, including the ones nobody "
+                "clicked; optical flow then walks that mapping outward through the shot, "
+                "labelling every 5th frame, stopping at a camera cut, at 30 seconds, or as soon "
+                "as the tracker’s own reprojection error passes 2.5 ft — whichever comes first, "
+                "so labels are dropped before they rot. On top of that, each training sample is "
+                "warped by a random perspective transform (image corners jittered up to 6%, "
+                "scale 0.85–1.18×, roll ±4°) with the labels pushed through the same matrix, so "
+                "the labels stay exact however aggressive the warp, plus brightness / contrast / "
+                "saturation jitter because arenas differ and geometry does not.", BODY)]
+    kp = _keypoint_meta()
+    if kp:
+        story += [table([
+            ["Held-out result (one whole camera shot)", "Value"],
+            ["Frames", f"{kp.get('train_frames')} train · {kp.get('val_frames')} held out "
+                       f"(shot “{', '.join(kp.get('val_shots', []))}”)"],
+            ["Best epoch", str(kp.get("epoch"))],
+            ["Median landmark error", f"{kp.get('val_px', float('nan')):.0f} px on the points "
+                                      f"the solver actually used"],
+            ["Median reprojection error", f"{kp.get('val_reproj_ft', float('nan')):.2f} ft"],
+            ["Frames solved within the 2 ft gate", f"{100 * kp.get('val_solve_rate', 0):.0f}%"],
+            ["Landmarks used per frame", f"{kp.get('val_points_used', 0):.1f} of 26"],
+        ], [2.9 * inch, 3.4 * inch])]
+        story += [P("Read that table against the acceptance gate in section 3 and the tension is "
+                    "the whole lesson. Four fifths of held-out frames clear the 2 ft "
+                    "reprojection gate, at a tight 1.5 ft — but acceptance in the pipeline also "
+                    "requires the independent scale check, and on a camera angle the model has "
+                    "never seen, none of those homographies pass it. They are self-consistent "
+                    "and wrong. The 53-pixel median landmark error is the same fact stated a "
+                    "second way: the landmarks are mutually consistent but nowhere near where "
+                    "they belong.", SMALL)]
+
+    story += [P("7.2  Player / ball detector — pretrained or hosted, not fine-tuned here", H2)]
+    story += [P("No detector was trained in this project, and it would be misleading to imply "
+                "otherwise. Two are supported behind one interface, and each one’s own class "
+                "<i>names</i> are matched onto the project’s schema (player, ball, referee, "
+                "rim), so a third can be dropped in without a code change.", BODY)]
+    story += [table([
+        ["", "Local YOLO (default)", "Hosted workflow (recommended)"],
+        ["Weights", "Ultralytics YOLO11-L, generic COCO, zero-shot — person → player, "
+                    "sports ball → ball",
+         "A serverless Roboflow basketball workflow with real <i>player</i>, "
+         "<i>referee</i> and <i>basketball</i> classes"],
+        ["Fine-tuning", "None. If a fine-tuned basketball checkpoint is dropped at "
+                        "models/basketball.pt it is picked up automatically, by name-matching",
+         "Done by its publisher, not here"],
+        ["Thresholds", "0.2 for players, 0.05 for the ball — the ball is small and blurred, and "
+                       "detectors rarely hallucinate one on a wood court",
+         "Same two thresholds, applied to the returned predictions"],
+        ["Cost / failure mode", "Free and offline; boxes the crowd, the bench and the officials, "
+                                "because COCO’s only relevant class is “person”",
+         "One network call per sampled frame — hence a larger stride, concurrent workers, "
+         "retries with backoff, and a skipped frame rather than a failed build"],
+    ], [1.05 * inch, 2.6 * inch, 2.65 * inch], small=True)]
+    story += [P("This is the single change that took the test clip from 30-plus boxed "
+                "“people” to a clean median of ten on-court players.", SMALL)]
+
+    story += [P("7.3  The perception pieces that are not learned", H2)]
+    story += [bullets([
+        "<b>Tracking</b> — constant-velocity prediction with greedy nearest-foot association "
+        "(90 px gate, a track survives two missed frames), and a hard reset at every camera cut "
+        "so identities never cross a replay. Association is on the foot point, not box overlap: "
+        "players share box sizes and move a long way between broadcast frames.",
+        "<b>Team assignment</b> — k-means with k = 2 over a 216-bin colour histogram of each "
+        "player’s torso crop, then a majority vote per tracklet rather than per frame, since "
+        "team identity is constant over a tracklet and a per-frame label only adds noise.",
+        "<b>Jersey numbers</b> — EasyOCR restricted to digits, run on the largest "
+        "(nearest-camera) crops of each tracklet, upscaled 3×, votes weighted by confidence. A "
+        "number is only accepted with corroboration, so one bad frame cannot stamp a wrong "
+        "number across a whole tracklet, and a player who is never legible simply stays unnamed.",
+        "<b>Ball path</b> — a constant-velocity tracker in pixel space that predicts the ball, "
+        "rejects implausible jumps, coasts through the frames the detector misses, and "
+        "re-acquires on a real pass or shot.",
+    ])]
+
+    story += [P("7.4  Shot, pass and drive models — trained here", H2)]
+    story += [P("Three independent LightGBM binary classifiers, one per action type. They are "
+                "gradient-boosted trees rather than a network on purpose: the inputs are a "
+                "handful of tabular geometric features, the datasets are tens of thousands of "
+                "rows, and what matters is a <i>calibrated</i> probability, checked on a "
+                "reliability diagram rather than an AUC.", BODY)]
+    story += [table([
+        ["Setting", "Value"],
+        ["Objective", "Binary log-loss, one model each for shot make, pass completion, drive success"],
+        ["Trees / rate", "200 estimators, learning rate 0.05"],
+        ["Capacity", "15 leaves per tree (the library’s default is 31) and at least 30 samples "
+                     "per leaf — deliberately conservative for a small tabular dataset"],
+        ["Sampling", "80% of rows and 90% of columns per tree, L2 regularisation 1.0"],
+        ["Feature contract", "Frozen ordered name lists (9 shot, 6 pass, 6 drive features), so a "
+                             "trained model and inference can never silently disagree"],
+    ], [1.35 * inch, 4.95 * inch], small=True)]
+    story += [P("The features themselves are all geometry derived from the State — nothing here "
+                "is learned, which is what lets the same feature code run on SportVU and on "
+                "broadcast video:", BODY)]
+    story += [table([
+        ["Shot (9)", "Pass (6)", "Drive (6)"],
+        ["distance to rim · angle to rim · closest-defender distance · defender angle · "
+         "defender pressure · shot clock · is-three · catch-and-shoot · player prior",
+         "pass distance · defenders in the lane · receiver separation · whether the passer "
+         "faces the receiver · receiver pressure · receiver distance to rim",
+         "help defenders on that side · primary defender’s lateral offset · primary defender "
+         "distance · driver speed · driver distance to rim · direction"],
+    ], [2.1 * inch, 2.1 * inch, 2.1 * inch], small=True)]
+    story += [P("The one genuinely statistical piece is the shot model’s <b>player prior</b>. "
+                "There are never enough shots per player per zone to fit individual effects "
+                "directly, so each player’s make rate is shrunk toward the league average by "
+                "empirical Bayes with a pseudo-count of 200 — deliberately hard shrinkage. In "
+                "the trained model that is 401 players around a league mean of 0.442. The prior "
+                "is injected into its feature column at both fit and predict time, so a player "
+                "the model never saw simply gets the league rate instead of a missing value.",
+                BODY)]
+    story += [P("Two honest notes on the real-data features. <i>Catch-and-shoot</i> is not "
+                "derivable from a single tracking moment, so it is held at zero on real shots "
+                "rather than being approximated. And the pass model’s negatives are rare by "
+                "construction (see section 6), which is the direct cause of it only tying its "
+                "baseline in section 8.", SMALL)]
+
+    story += [P("7.5  V(s), the situation-value network — trained here", H2)]
+    story += [P("A deep set over the eleven entities on the floor — ten players and the ball. "
+                "Each entity goes through one shared MLP, the results are mean-pooled with a "
+                "mask, the global features are concatenated on, and a head emits a single "
+                "expected-points number. Pooling is what makes it <b>permutation-invariant</b>: "
+                "shuffling the players cannot change the answer, and a variable number of "
+                "entities is handled natively rather than by padding with fictional players.",
+                BODY)]
+    story += [table([
+        ["Property", "Value"],
+        ["Input per entity", "8 numbers — court position relative to the attacked rim, velocity, "
+                             "and flags for offense / defense / ball / has-ball — plus a 16-dim "
+                             "learned player embedding"],
+        ["Global input", "3 numbers — shot clock, spacing area, how many players were observed"],
+        ["Network", "Shared MLP 24 → 128 → 128, masked mean pool, head 131 → 128 → 1. "
+                    "About 37 k weights plus the player embedding table (44 k total for the "
+                    "440-player vocabulary trained here)"],
+        ["Target", "The possession’s realized points, MSE loss"],
+        ["Training", "40 epochs of Adam at 1.5e-3, batch 256, weight decay 2e-3, early-stopped "
+                     "on held-out games"],
+        ["Weighting", "The first frames of a possession are down-weighted to 0.4: value there is "
+                      "near-constant and teaches nothing"],
+        ["Augmentation", "Entities are dropped and jittered afresh every epoch, so the "
+                         "permutation-invariant architecture is actually exercised on variable "
+                         "entity counts instead of only on a full ten"],
+        ["Where it runs", "Trained on the GPU when one is present; moved back to CPU for "
+                          "inference, because scoring evaluates one state at a time and a "
+                          "single-sample forward is faster on CPU than paying transfer overhead"],
+    ], [1.35 * inch, 4.95 * inch], small=True)]
+    story += [P("Non-finite inputs are never passed through: a player whose tracking coordinates "
+                "drop out is masked off as unobserved rather than being allowed to poison the "
+                "network with a NaN. Section 9 is candid about how well this model actually "
+                "works.", SMALL)]
+
+    story += [P("7.6  Language models — used, never trusted", H2)]
+    story += [P("Two places in the product talk, and neither is allowed to originate a fact. "
+                "The written rationale and the chat assistant both receive a brief containing "
+                "the recommendation and its numbers, and are instructed that every number they "
+                "write must already appear in that brief, that coordinates may never be "
+                "written, and that players are referred to by resolved names only.", BODY)]
+    story += [bullets([
+        "<b>Rationale</b> — Claude, called with a strict JSON output schema so the shape of the "
+        "result is guaranteed. The default path is an offline template generator that assembles "
+        "prose from resolved names and the value model’s own numbers, so it <i>cannot</i> "
+        "fabricate a figure — that is also what the test suite runs, with no network and no key.",
+        "<b>Chat assistant</b> — Groq (Llama 3.3 70B) in JSON mode if a Groq key is set, "
+        "otherwise Claude with a forced tool call, so the reply and the “draw this candidate "
+        "instead” selection come back as structured fields rather than as prose to be parsed. "
+        "With no key at all it falls back to built-in rules.",
+        "<b>The model identifiers are configuration, not architecture.</b> They sit in one "
+        "constant per module and are meant to be updated; nothing downstream depends on which "
+        "model answered.",
+    ])]
+    story += [P("Neither model is fine-tuned, and neither is ever given the state, the tracking "
+                "or the video — only the brief. The state schema is produced entirely by code, "
+                "which is what keeps a language model out of the measurement path.", SMALL)]
+
+    story += [P("7.7  How the pieces combine at a pause", H2)]
+    story += [P("Worth stating once, in one place, because it is where the pieces above meet:",
+                BODY)]
+    story += [table([
+        ["Step", "What happens"],
+        ["1", "The detector boxes players and the ball; the tracker gives them stable "
+              "identities; the homography puts their feet on the court in feet"],
+        ["2", "A confidence score is blended from four signals — how many players were tracked "
+              "(35%), whether the court mapping held (35%), identity quality (15%) and whether "
+              "the ball was seen recently (15%). Below 0.6, or below 8 players, nothing is shown"],
+        ["3", "Up to 13 legal actions are enumerated and pruned — no shot past 32 ft unless the "
+              "clock is under 2 s, no drive into a sideline, no screen with a teammate more "
+              "than 25 ft away"],
+        ["4", "Each action is pushed through a one-step geometric transition: the ball and the "
+              "acting player move, the guarding defender is dragged along (partially, on a "
+              "successful drive), and everyone else stays put, because they have not reacted yet"],
+        ["5", "The resulting state is valued. For a pass or a drive the leaf is the better of "
+              "V(s′) and that new handler’s immediate calibrated shot; for a reset or a screen "
+              "it is V(s′) alone, since no fresh look was created"],
+        ["6", "Q = P(success) × leaf value + (1 − P(success)) × (−0.10) for the turnover, and "
+              "the candidates are ranked. One step deep, on purpose: deeper trees compound "
+              "prediction error until the leaves are noise"],
+    ], [0.45 * inch, 5.85 * inch], small=True)]
+
+    # ---------------- 8. Benchmark ----------------
+    story += [PageBreak()]
+    story += [P("8.  Benchmark results", H1)]
     story += [P("Every number below was produced by the project’s own scripts "
                 "(<font face='Courier'>scripts/benchmark.py</font> and the training runs).", SMALL)]
 
@@ -486,8 +842,8 @@ def build():
     story += [P(f"And the whole system is covered by an automated test suite: "
                 f"<b>{tests.get('passed', 100)} tests pass</b> end to end.", BODY)]
 
-    # ---------------- 8. Limitations ----------------
-    story += [P("8.  Honest limitations", H1)]
+    # ---------------- 9. Limitations ----------------
+    story += [P("9.  Honest limitations", H1)]
     story += [P("A description isn’t complete without the rough edges. These are known and "
                 "documented, not hidden.", BODY)]
     story += [bullets([
@@ -511,8 +867,8 @@ def build():
         "investigate — a scoring question, not a detection one.",
     ])]
 
-    # ---------------- 9. Deployment ----------------
-    story += [P("9.  Deployment", H1)]
+    # ---------------- 10. Deployment ----------------
+    story += [P("10.  Deployment", H1)]
     story += [P("The app is deployed as a public web page, and the pre-compute pass can run as "
                 "a batch job on AWS. The two are independent: the page is meant to stay up and "
                 "costs cents a month, while the job runs once per clip and leaves nothing "
@@ -574,8 +930,8 @@ def build():
                 "the project is ever exercised. Neither is a misconfiguration, and both are "
                 "worth checking before debugging one’s own templates.", SMALL)]
 
-    # ---------------- 10. Running it ----------------
-    story += [P("10.  Running it yourself", H1)]
+    # ---------------- 11. Running it ----------------
+    story += [P("11.  Running it yourself", H1)]
     story += [P("Install and run the test suite (no data or GPU needed):", BODY)]
     story += [P("pip install -e .<br/>python -m pytest -q", CODE)]
     story += [P("Build and watch the web app on a clip:", BODY)]
@@ -607,8 +963,9 @@ def build():
                 "python deploy/aws/sagemaker/build_image_codebuild.py<br/>"
                 "python deploy/aws/sagemaker/run_job.py --video clip.mp4 --calib shot1.json", CODE)]
 
-    # ---------------- 11. Glossary ----------------
-    story += [P("11.  Glossary", H1)]
+    # ---------------- 12. Glossary ----------------
+    story += [PageBreak()]
+    story += [P("12.  Glossary", H1)]
     gl = [
         ("Expected points (EPV)", "The average points a situation or action is worth — the "
          "common yardstick that lets a shot, pass, and drive be compared."),
@@ -621,6 +978,20 @@ def build():
         ("V(s)", "The neural network that estimates how valuable a resulting situation is."),
         ("Brier score", "A measure of how well-calibrated a predicted probability is; lower is "
          "better."),
+        ("Calibrated (probability)", "A probability is calibrated when things it calls 30% "
+         "likely happen about 30% of the time. Not to be confused with court calibration, "
+         "which is the camera mapping."),
+        ("Gradient-boosted trees", "The shot, pass and drive models: many small decision trees "
+         "fitted one after another, each correcting the last. Well suited to a handful of "
+         "tabular features and tens of thousands of rows."),
+        ("Empirical-Bayes prior", "A player’s own make rate pulled toward the league average in "
+         "proportion to how few shots he has. It stops a hot week from being mistaken for "
+         "skill, and gives an unseen player the league rate rather than nothing."),
+        ("Deep set / permutation-invariant", "An architecture that treats its inputs as a set: "
+         "every player goes through the same small network and the results are pooled, so "
+         "reordering the players cannot change the output."),
+        ("Tracklet", "One player’s run of detections between camera cuts. Teams and jersey "
+         "numbers are decided per tracklet, by vote, rather than per frame."),
         ("Confidence gate", "The rule that withholds a recommendation when the picture is too "
          "unclear to trust."),
         ("SportVU", "The NBA’s official optical player-tracking data, used to train the "
